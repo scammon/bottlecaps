@@ -154,14 +154,18 @@
     text-transform: none;
     margin-top: 2px;
   }
-  #history-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.9rem;
+  /* History list: div-based rows (not a <table>) so per-row swipe-to-reveal
+     transforms are simple and reliable -- CSS transforms on <tr>/<td> are
+     inconsistent across browsers, plain flex rows are not. */
+  #history-list { font-size: 0.9rem; }
+  .hist-header, .hist-row-content {
+    display: grid;
+    grid-template-columns: 1.3fr 0.7fr 0.9fr 0.9fr;
+    gap: 8px;
+    align-items: center;
   }
-  #history-table th {
-    text-align: left;
-    font-size: 0.7rem;
+  .hist-header {
+    font-size: 0.68rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--muted);
@@ -169,47 +173,86 @@
     padding: 0 0 8px;
     border-bottom: 1px solid #2b2f3d;
   }
-  #history-table th:last-child, #history-table td:last-child { text-align: right; }
-  #history-table td {
-    padding: 10px 0;
+  .hist-header > div:not(:first-child), .hist-cell:not(.hist-started) { text-align: right; }
+  .hist-row {
+    position: relative;
+    overflow: hidden;
     border-bottom: 1px solid #20232d;
-    font-variant-numeric: tabular-nums;
   }
-  #history-table td.empty {
+  .hist-row-actions {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+  }
+  .hist-edit-btn, .hist-delete-btn {
+    height: 100%;
+    padding: 0 20px;
+    color: white;
+    border: none;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .hist-edit-btn { background: var(--accent); }
+  /* Delete sits further from the row content -- revealed only on a
+     further swipe past the Edit button (see wireSwipe's two-stage snap). */
+  .hist-delete-btn { background: var(--danger); }
+  .hist-row-content {
+    position: relative;
+    background: var(--bg);
+    padding: 10px 0;
+    font-variant-numeric: tabular-nums;
+    touch-action: pan-y;
+  }
+  .hist-empty {
     text-align: center;
     color: var(--muted);
     padding: 20px 0;
   }
-  #history-table td.gap { color: var(--muted); }
-
-  #settings-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 16px;
-    font-size: 0.85rem;
-    color: var(--muted);
-  }
-  #settings-row label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-  }
-  #settings-row input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--accent);
-  }
-  #settings-row select {
+  .hist-cell.hist-gap { color: var(--muted); }
+  .hist-oz-edit {
     background: var(--panel);
     color: var(--text);
     border: 1px solid #2b2f3d;
     border-radius: 6px;
-    padding: 4px 6px;
+    padding: 2px 4px;
     font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    width: 100%;
+    text-align: right;
   }
+  .hb-log-btn {
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .hb-log-btn:disabled { opacity: 0.5; cursor: default; }
+  .hb-logged-label {
+    color: var(--muted);
+    font-size: 0.72rem;
+  }
+  /* Filled (vs. Log's outline) -- signals there's a staged edit waiting to
+     be pushed to the real Huckleberry entry. */
+  .hb-update-btn {
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    color: white;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .hb-update-btn:disabled { opacity: 0.5; cursor: default; }
+  .hist-cell.hist-oz.pending { color: var(--accent); }
+
   #cancel-button {
     background: none;
     border: 1px solid #3a2b2f;
@@ -220,7 +263,7 @@
     cursor: pointer;
   }
   #cancel-button:active { background: #201519; }
-  #cancel-button.hidden, #settings-row.hidden { display: none; }
+  #cancel-button.hidden { display: none; }
 
   .modal-backdrop {
     position: fixed;
@@ -268,6 +311,42 @@
     background: var(--danger);
     color: white;
   }
+  #ounces-cancel {
+    background: #2b2f3d;
+    color: var(--text);
+  }
+  #ounces-confirm {
+    background: var(--accent);
+    color: white;
+  }
+  #delete-keep {
+    background: #2b2f3d;
+    color: var(--text);
+  }
+  #delete-confirm {
+    background: var(--danger);
+    color: white;
+  }
+  #ounces-modal-input {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid #2b2f3d;
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 1.4rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 8px;
+  }
+  #ounces-modal-input.invalid { border-color: var(--danger); }
+  #ounces-modal-error {
+    color: var(--danger);
+    font-size: 0.8rem;
+    min-height: 1.2em;
+    margin-bottom: 12px;
+  }
+  #ounces-confirm:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
@@ -278,22 +357,6 @@
     <div id="sub"></div>
     <div id="started-at"></div>
     <button id="cancel-button" class="hidden">Cancel this bottle</button>
-    <div id="settings-row">
-      <label><input type="checkbox" id="hb-enabled"> Log to Huckleberry</label>
-      <label>Ounces
-        <select id="ounces">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-          <option value="5">5</option>
-          <option value="6">6</option>
-          <option value="7">7</option>
-          <option value="8">8</option>
-          <option value="9">9</option>
-        </select>
-      </label>
-    </div>
     <div id="notif-banner">Notifications are blocked. Enable them for this site to get an alert when the timer runs out.</div>
     <div id="stats"></div>
   </div>
@@ -308,13 +371,37 @@
     </div>
   </div>
 
+  <div id="ounces-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <p>How many ounces?</p>
+      <input id="ounces-modal-input" type="text" inputmode="decimal" placeholder="3.00">
+      <div id="ounces-modal-error"></div>
+      <div class="modal-actions">
+        <button id="ounces-cancel">Cancel</button>
+        <button id="ounces-confirm">Log bottle</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <p>Delete this bottle entry?</p>
+      <div class="modal-actions">
+        <button id="delete-keep">Keep it</button>
+        <button id="delete-confirm">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <section id="history">
     <div id="avg-gap">--<span class="label">average time between bottles</span></div>
     <h2>Recent bottles</h2>
-    <table id="history-table">
-      <thead><tr><th>Started</th><th>Gap</th></tr></thead>
-      <tbody id="history-body"></tbody>
-    </table>
+    <div id="history-list">
+      <div class="hist-header">
+        <div>Started</div><div>Oz</div><div>Gap</div><div>Huckleberry</div>
+      </div>
+      <div id="history-body"></div>
+    </div>
   </section>
 
 <script>
@@ -328,11 +415,17 @@
   const $avgGap = document.getElementById('avg-gap');
   const $historyBody = document.getElementById('history-body');
   const $cancelButton = document.getElementById('cancel-button');
-  const $hbEnabled = document.getElementById('hb-enabled');
-  const $ounces = document.getElementById('ounces');
   const $cancelModal = document.getElementById('cancel-modal');
   const $modalKeep = document.getElementById('modal-keep');
   const $modalDiscard = document.getElementById('modal-discard');
+  const $ouncesModal = document.getElementById('ounces-modal');
+  const $ouncesInput = document.getElementById('ounces-modal-input');
+  const $ouncesError = document.getElementById('ounces-modal-error');
+  const $ouncesCancel = document.getElementById('ounces-cancel');
+  const $ouncesConfirm = document.getElementById('ounces-confirm');
+  const $deleteModal = document.getElementById('delete-modal');
+  const $deleteKeep = document.getElementById('delete-keep');
+  const $deleteConfirm = document.getElementById('delete-confirm');
 
   let expiresAtMs = null;
   let loggedAtMs = null;
@@ -412,11 +505,30 @@
     return res.json();
   }
 
-  async function logBottle() {
-    const res = await fetch('/api/bottle', { method: 'POST' });
+  async function logBottle(ounces) {
+    const res = await fetch('/api/bottle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ounces }),
+    });
     if (!res.ok) throw new Error('log failed');
     return res.json();
   }
+
+  // Positive number, at most 2 decimal places -- mirrors the server's
+  // parseOunces. Returns the normalized number, or null if invalid.
+  function parseOuncesInput(str) {
+    const n = Number(str);
+    if (!Number.isFinite(n) || n <= 0 || n > 20) return null;
+    const cents = Math.round(n * 100);
+    if (Math.abs(cents - n * 100) > 1e-6) return null;
+    return cents / 100;
+  }
+
+  // Quarter-ounce steps for the history table's Edit dropdown: 0.25 .. 9.00.
+  // (The log-button modal stays a free-text field per its own spec -- this
+  // is specifically the swipe-to-edit control in the history table.)
+  const QUARTER_OUNCE_OPTIONS = Array.from({ length: 36 }, (_, i) => (i + 1) * 0.25);
 
   // --- History table --------------------------------------------------
 
@@ -435,26 +547,224 @@
     return res.json();
   }
 
+  // Two-stage reveal: swipe past EDIT_WIDTH uncovers just Edit (closest to
+  // the row content, since it's the last child under the actions
+  // container's justify-content:flex-end -- see buildRow); swiping further,
+  // past the full combined width, additionally uncovers Delete underneath.
+  const EDIT_WIDTH = 72;
+  const DELETE_WIDTH = 80;
+  const FULL_WIDTH = EDIT_WIDTH + DELETE_WIDTH;
+  let openSwipeRow = null; // the .hist-row-content currently swiped open, if any
+
+  function closeOpenSwipe() {
+    if (openSwipeRow) {
+      openSwipeRow.style.transform = '';
+      openSwipeRow = null;
+    }
+  }
+
+  function currentTranslateX(el) {
+    try {
+      return new DOMMatrix(getComputedStyle(el).transform).m41;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // Attaches left-swipe-to-reveal-actions to one row's content element.
+  // hasDelete controls whether there's a second stage to swipe into --
+  // already-logged rows only ever get Edit (deleting a confirmed
+  // Huckleberry entry isn't supported), so their full reveal is just
+  // EDIT_WIDTH, not EDIT_WIDTH + DELETE_WIDTH.
+  // Ignores mostly-vertical drags so page scrolling still works normally.
+  function wireSwipe(contentEl, hasDelete) {
+    const fullWidth = hasDelete ? FULL_WIDTH : EDIT_WIDTH;
+    let startX = null, startY = null, startTransform = 0, dragging = false, deciding = true;
+
+    contentEl.addEventListener('touchstart', (e) => {
+      if (openSwipeRow && openSwipeRow !== contentEl) closeOpenSwipe();
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      startTransform = currentTranslateX(contentEl);
+      dragging = false;
+      deciding = true;
+      contentEl.style.transition = 'none';
+    }, { passive: true });
+
+    contentEl.addEventListener('touchmove', (e) => {
+      if (startX === null) return;
+      const dx = e.touches[0].clientX - startX;
+      const dy = e.touches[0].clientY - startY;
+      if (deciding) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        deciding = false;
+        dragging = Math.abs(dx) > Math.abs(dy);
+      }
+      if (!dragging) return;
+      e.preventDefault();
+      const clamped = Math.min(0, Math.max(-fullWidth, startTransform + dx));
+      contentEl.style.transform = `translateX(${clamped}px)`;
+    }, { passive: false });
+
+    contentEl.addEventListener('touchend', () => {
+      contentEl.style.transition = '';
+      if (!dragging) { startX = null; return; }
+      const current = currentTranslateX(contentEl);
+      let target;
+      if (hasDelete && current <= -(EDIT_WIDTH + DELETE_WIDTH / 2)) {
+        target = -fullWidth; // swiped past Edit and well into Delete
+      } else if (current <= -(EDIT_WIDTH / 2)) {
+        target = -EDIT_WIDTH; // swiped enough to reveal Edit
+      } else {
+        target = 0;
+      }
+      contentEl.style.transform = target === 0 ? '' : `translateX(${target}px)`;
+      openSwipeRow = target === 0 ? (openSwipeRow === contentEl ? null : openSwipeRow) : contentEl;
+      startX = null;
+    });
+  }
+
+  async function patchOunces(id, ounces) {
+    const res = await fetch(`/api/bottle/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ounces }),
+    });
+    if (!res.ok) throw new Error('ounces update failed');
+  }
+
+  async function logRowToHuckleberry(id, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Logging…';
+    try {
+      const res = await fetch(`/api/bottle/${id}/log-to-huckleberry`, { method: 'POST' });
+      if (!res.ok) throw new Error('log-to-huckleberry failed');
+      refreshHistory();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Log';
+    }
+  }
+
+  async function updateRowHuckleberry(id, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Updating…';
+    try {
+      const res = await fetch(`/api/bottle/${id}/update-huckleberry`, { method: 'POST' });
+      if (!res.ok) throw new Error('update-huckleberry failed');
+      refreshHistory();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Update';
+    }
+  }
+
+  function buildRow(row) {
+    const wrap = document.createElement('div');
+    wrap.className = 'hist-row';
+    const hasPending = row.pendingOunces !== null;
+
+    const actions = document.createElement('div');
+    actions.className = 'hist-row-actions';
+    // DOM order Delete-then-Edit: the actions container packs to the right
+    // (flex-end), so Edit ends up closest to the row content -- revealed
+    // first on a small swipe -- and Delete (when present) sits further
+    // out, only uncovered by swiping past Edit too (see wireSwipe).
+    if (!row.huckleberryLogged) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'hist-delete-btn';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => {
+        closeOpenSwipe();
+        openDeleteModal(row.id);
+      });
+      actions.appendChild(deleteBtn);
+    }
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'hist-edit-btn';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => {
+      closeOpenSwipe();
+      const select = document.createElement('select');
+      select.className = 'hist-oz-edit';
+      const current = hasPending ? row.pendingOunces : row.ounces;
+      for (const opt of QUARTER_OUNCE_OPTIONS) {
+        const el = document.createElement('option');
+        el.value = String(opt);
+        el.textContent = opt.toFixed(2);
+        if (current !== null && Math.abs(opt - current) < 0.001) el.selected = true;
+        select.appendChild(el);
+      }
+      ozCell.replaceChildren(select);
+      select.focus();
+      select.addEventListener('change', async () => {
+        try {
+          await patchOunces(row.id, parseFloat(select.value));
+        } catch (e) { /* fall through to refresh either way */ }
+        refreshHistory();
+      });
+    });
+    actions.appendChild(editBtn);
+    wrap.appendChild(actions);
+
+    const content = document.createElement('div');
+    content.className = 'hist-row-content';
+
+    const startedCell = document.createElement('div');
+    startedCell.className = 'hist-cell hist-started';
+    startedCell.textContent = fmtHistoryTime(row.loggedAt);
+
+    const ozCell = document.createElement('div');
+    ozCell.className = 'hist-cell hist-oz' + (hasPending ? ' pending' : '');
+    const displayOz = hasPending ? row.pendingOunces : row.ounces;
+    ozCell.textContent = displayOz === null ? '—' : displayOz + (hasPending ? ' *' : '');
+
+    const gapCell = document.createElement('div');
+    gapCell.className = 'hist-cell hist-gap';
+    gapCell.textContent = row.gapMs === null ? '—' : fmtCompact(row.gapMs);
+
+    const hbCell = document.createElement('div');
+    hbCell.className = 'hist-cell hist-hb';
+    if (row.huckleberryLogged && hasPending) {
+      const btn = document.createElement('button');
+      btn.className = 'hb-update-btn';
+      btn.textContent = 'Update';
+      btn.addEventListener('click', () => updateRowHuckleberry(row.id, btn));
+      hbCell.appendChild(btn);
+    } else if (row.huckleberryLogged) {
+      const label = document.createElement('span');
+      label.className = 'hb-logged-label';
+      label.textContent = 'Logged';
+      hbCell.appendChild(label);
+    } else {
+      const btn = document.createElement('button');
+      btn.className = 'hb-log-btn';
+      btn.textContent = 'Log';
+      btn.addEventListener('click', () => logRowToHuckleberry(row.id, btn));
+      hbCell.appendChild(btn);
+    }
+
+    content.append(startedCell, ozCell, gapCell, hbCell);
+    wrap.appendChild(content);
+    wireSwipe(content, !row.huckleberryLogged);
+    return wrap;
+  }
+
   function renderHistory({ rows, avgGapMs }) {
     $avgGap.innerHTML = (avgGapMs === null ? '—' : fmtCompact(avgGapMs))
       + '<span class="label">average time between bottles</span>';
 
-    $historyBody.innerHTML = '';
+    openSwipeRow = null;
+    $historyBody.replaceChildren();
     if (rows.length === 0) {
-      $historyBody.innerHTML = '<tr><td class="empty" colspan="2">No bottles logged yet</td></tr>';
+      const empty = document.createElement('div');
+      empty.className = 'hist-empty';
+      empty.textContent = 'No bottles logged yet';
+      $historyBody.appendChild(empty);
       return;
     }
-    for (const row of rows) {
-      const tr = document.createElement('tr');
-      const tdTime = document.createElement('td');
-      tdTime.textContent = fmtHistoryTime(row.loggedAt);
-      const tdGap = document.createElement('td');
-      tdGap.className = 'gap';
-      tdGap.textContent = row.gapMs === null ? '—' : fmtCompact(row.gapMs);
-      tr.appendChild(tdTime);
-      tr.appendChild(tdGap);
-      $historyBody.appendChild(tr);
-    }
+    for (const row of rows) $historyBody.appendChild(buildRow(row));
   }
 
   async function refreshHistory() {
@@ -465,35 +775,87 @@
     }
   }
 
-  // --- Settings (huckleberry logging + ounces) ------------------------
+  // --- Ounces modal (shown on every press of the log button) ----------
+  // Pre-fills with the last-used amount (server remembers it -- see
+  // POST /api/bottle and PATCH /api/bottle/:id), or 3.00 if there's no
+  // history yet.
 
-  async function loadSettings() {
-    try {
-      const settings = await fetch('/api/settings').then((r) => r.json());
-      $hbEnabled.checked = settings.huckleberryEnabled;
-      $ounces.value = String(settings.ounces);
-    } catch (e) {
-      // Leave the checkbox/select at their HTML defaults (checked, "3").
-    }
+  function showOuncesError(msg) {
+    $ouncesError.textContent = msg;
+    $ouncesInput.classList.toggle('invalid', !!msg);
   }
 
-  async function saveSetting(partial) {
+  async function openOuncesModal() {
+    showOuncesError('');
+    let prefill = 3;
     try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(partial),
-      });
-    } catch (e) {
-      console.error('failed to save setting', e);
-    }
+      prefill = (await fetch('/api/settings').then((r) => r.json())).ounces;
+    } catch (e) { /* fall back to 3 */ }
+    $ouncesInput.value = prefill.toFixed(2);
+    $ouncesModal.classList.remove('hidden');
+    $ouncesInput.focus();
+    $ouncesInput.select();
   }
 
-  $hbEnabled.addEventListener('change', () => {
-    saveSetting({ huckleberryEnabled: $hbEnabled.checked });
+  function closeOuncesModal() {
+    $ouncesModal.classList.add('hidden');
+  }
+
+  $ouncesCancel.addEventListener('click', closeOuncesModal);
+  $ouncesModal.addEventListener('click', (e) => {
+    if (e.target === $ouncesModal) closeOuncesModal();
   });
-  $ounces.addEventListener('change', () => {
-    saveSetting({ ounces: parseInt($ounces.value, 10) });
+  $ouncesInput.addEventListener('input', () => showOuncesError(''));
+  $ouncesInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $ouncesConfirm.click();
+  });
+
+  $ouncesConfirm.addEventListener('click', async () => {
+    const ounces = parseOuncesInput($ouncesInput.value);
+    if (ounces === null) {
+      showOuncesError('Enter a number like 3 or 3.25 (up to 2 decimal places).');
+      return;
+    }
+    $ouncesConfirm.disabled = true;
+    try {
+      const status = await logBottle(ounces);
+      applyStatus(status);
+      refreshHistory();
+      closeOuncesModal();
+    } catch (e) {
+      showOuncesError('Could not log — check the server.');
+    } finally {
+      $ouncesConfirm.disabled = false;
+    }
+  });
+
+  // --- Delete (history table's swipe-further action) -------------------
+
+  let pendingDeleteId = null;
+
+  function openDeleteModal(id) {
+    pendingDeleteId = id;
+    $deleteModal.classList.remove('hidden');
+  }
+  function closeDeleteModal() {
+    $deleteModal.classList.add('hidden');
+    pendingDeleteId = null;
+  }
+
+  $deleteKeep.addEventListener('click', closeDeleteModal);
+  $deleteModal.addEventListener('click', (e) => {
+    if (e.target === $deleteModal) closeDeleteModal();
+  });
+  $deleteConfirm.addEventListener('click', async () => {
+    if (!pendingDeleteId) return;
+    $deleteConfirm.disabled = true;
+    try {
+      await fetch(`/api/bottle/${pendingDeleteId}`, { method: 'DELETE' });
+      refreshHistory();
+      refreshFromServer();
+    } catch (e) { /* history refresh will just show the row still there */ }
+    $deleteConfirm.disabled = false;
+    closeDeleteModal();
   });
 
   // --- Cancel (discard active bottle) ----------------------------------
@@ -567,16 +929,7 @@
       updateNotifBanner();
       await ensurePushSubscription();
     }
-    $button.disabled = true;
-    try {
-      const status = await logBottle();
-      applyStatus(status);
-      refreshHistory();
-    } catch (e) {
-      $sub.textContent = 'Could not log — check the server.';
-    } finally {
-      $button.disabled = false;
-    }
+    openOuncesModal();
   });
 
   document.addEventListener('visibilitychange', () => {
