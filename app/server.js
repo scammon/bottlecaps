@@ -347,10 +347,7 @@ async function getSettings(userId) {
 async function connectWithRetry(attempts = 20, delayMs = 1500) {
   for (let i = 1; i <= attempts; i++) {
     try {
-      // Also verifies the schema has been applied, so startup fails fast
-      // with a clear error rather than surfacing confusing ones on the
-      // first request.
-      await pool.query('SELECT 1 FROM users LIMIT 1');
+      await pool.query('SELECT 1');
       console.log(`[postgres] connected (attempt ${i})`);
       return;
     } catch (err) {
@@ -361,11 +358,82 @@ async function connectWithRetry(attempts = 20, delayMs = 1500) {
   }
 }
 
+// The app runs its own schema DDL on boot rather than relying on a
+// platform migration step. On Dailey OS, dailey_db_exec applies SQL as a
+// short-lived exec user that gets dropped afterward -- any tables it
+// creates end up owned by a role the app's own runtime DB user has no
+// grants on (and dailey_db_exec forbids GRANT statements outright, so
+// there's no way to hand that access back). Running CREATE TABLE as the
+// app's own pool sidesteps the problem entirely: the app's DB role owns
+// whatever it creates. Every statement is idempotent (IF NOT EXISTS), so
+// this is safe to run on every boot.
+const SCHEMA_SQL = `
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS users (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  dailey_tenant TEXT UNIQUE NOT NULL,
+  email         TEXT,
+  name          TEXT,
+  widget_token  TEXT UNIQUE NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bottles (
+  id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  logged_at              TIMESTAMPTZ NOT NULL,
+  ounces                 NUMERIC(5,2),
+  pending_ounces         NUMERIC(5,2),
+  notified               BOOLEAN NOT NULL DEFAULT false,
+  huckleberry_logged     BOOLEAN NOT NULL DEFAULT false,
+  source                 TEXT,
+  huckleberry_start_iso  TEXT,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS bottles_user_logged_at_idx ON bottles (user_id, logged_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS bottles_hb_start_iso_uidx
+  ON bottles (user_id, huckleberry_start_iso) WHERE huckleberry_start_iso IS NOT NULL;
+CREATE INDEX IF NOT EXISTS bottles_unnotified_idx ON bottles (user_id, logged_at DESC)
+  WHERE notified = false;
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint    TEXT NOT NULL,
+  p256dh      TEXT NOT NULL,
+  auth        TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, endpoint)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  default_ounces  NUMERIC(5,2) NOT NULL DEFAULT 3
+);
+
+CREATE TABLE IF NOT EXISTS huckleberry_credentials (
+  user_id             UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  email               TEXT NOT NULL,
+  encrypted_password  TEXT NOT NULL,
+  child_uid           TEXT,
+  bottle_type         TEXT NOT NULL DEFAULT 'Formula',
+  timezone            TEXT NOT NULL DEFAULT 'America/New_York',
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
+async function runMigrations() {
+  await pool.query(SCHEMA_SQL);
+  console.log('[postgres] schema migration applied (idempotent)');
+}
+
 async function main() {
   // depends_on only waits for the postgres *container* to start, not for
   // Postgres itself to be ready to accept connections -- retry instead of
   // relying on Docker's (much slower, noisier) whole-container restart loop.
   await connectWithRetry();
+  await runMigrations();
 
   const app = express();
   app.use(express.json());
