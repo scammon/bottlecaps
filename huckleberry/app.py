@@ -4,11 +4,17 @@ which requires Python >=3.14 -- kept as its own container/image rather than
 bolted onto the Node app image, which stays on node:22-alpine.
 
 Not exposed to the host; only bottlecaps-app talks to it, over the compose
-network, by service name (matching how mongo is set up).
+network, by service name (matching how postgres is set up).
+
+Multi-tenant: every request carries its own Huckleberry credentials in the
+body (`email`, `password`, `timezone`, `bottle_type`, `child_uid`) -- Node
+decrypts them per-user from the `huckleberry_credentials` table and passes
+them through per-call. This service holds no account state of its own and
+authenticates fresh with Huckleberry on every request (same as before;
+that was never cached across requests even in the single-tenant version).
 """
 
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -16,34 +22,44 @@ from aiohttp import web
 from google.cloud import firestore
 from huckleberry_api import HuckleberryAPI
 
-BOTTLECAPS_NOTE = "Bottlecaps"
-
 logging.basicConfig(level=logging.INFO)
 _LOGGER = logging.getLogger("huckleberry-service")
 
 OZ_PER_ML = 1 / 29.5735
+BOTTLECAPS_NOTE = "Bottlecaps"
 
-EMAIL = os.environ["HUCKLEBERRY_EMAIL"]
-PASSWORD = os.environ["HUCKLEBERRY_PASSWORD"]
-TIMEZONE = os.environ.get("HUCKLEBERRY_TIMEZONE", "America/New_York")
-BOTTLE_TYPE = os.environ.get("HUCKLEBERRY_BOTTLE_TYPE", "Formula")
-CHILD_UID_OVERRIDE = os.environ.get("HUCKLEBERRY_CHILD_UID") or None
+REQUIRED_CRED_FIELDS = ("email", "password")
 
 
-async def _authenticated_api(session: aiohttp.ClientSession) -> HuckleberryAPI:
+def _extract_creds(body: dict) -> dict:
+    """Pulls the Huckleberry account fields out of a request body, applying
+    the same defaults the single-tenant version used to read from env vars."""
+    missing = [f for f in REQUIRED_CRED_FIELDS if not body.get(f)]
+    if missing:
+        raise KeyError(f"missing credential field(s): {', '.join(missing)}")
+    return {
+        "email": body["email"],
+        "password": body["password"],
+        "timezone": body.get("timezone") or "America/New_York",
+        "bottle_type": body.get("bottle_type") or "Formula",
+        "child_uid": body.get("child_uid") or None,
+    }
+
+
+async def _authenticated_api(session: aiohttp.ClientSession, creds: dict) -> HuckleberryAPI:
     api = HuckleberryAPI(
-        email=EMAIL,
-        password=PASSWORD,
-        timezone=TIMEZONE,
+        email=creds["email"],
+        password=creds["password"],
+        timezone=creds["timezone"],
         websession=session,
     )
     await api.authenticate()
     return api
 
 
-async def _resolve_child_uid(api: HuckleberryAPI) -> str:
-    if CHILD_UID_OVERRIDE:
-        return CHILD_UID_OVERRIDE
+async def _resolve_child_uid(api: HuckleberryAPI, creds: dict) -> str:
+    if creds["child_uid"]:
+        return creds["child_uid"]
     user = await api.get_user()
     if user is None:
         raise RuntimeError("could not fetch Huckleberry user document")
@@ -59,10 +75,16 @@ async def handle_healthz(request: web.Request) -> web.Response:
 
 
 async def handle_whoami(request: web.Request) -> web.Response:
-    """Diagnostic: confirms credentials work and lists known children."""
+    """Diagnostic: confirms a set of credentials work and lists known children."""
+    try:
+        body = await request.json()
+        creds = _extract_creds(body)
+    except (KeyError, ValueError, TypeError) as err:
+        return web.json_response({"ok": False, "error": f"bad request: {err}"}, status=400)
+
     async with aiohttp.ClientSession() as session:
         try:
-            api = await _authenticated_api(session)
+            api = await _authenticated_api(session, creds)
             user = await api.get_user()
         except Exception as err:  # noqa: BLE001 -- surfaced to the caller, not swallowed
             _LOGGER.exception("whoami failed")
@@ -141,6 +163,7 @@ async def _update_bottle_amount(
 async def handle_log_bottle(request: web.Request) -> web.Response:
     try:
         body = await request.json()
+        creds = _extract_creds(body)
         start_time = datetime.fromisoformat(body["start_time_iso"])
         amount_oz = float(body["amount_oz"])
     except (KeyError, ValueError, TypeError) as err:
@@ -148,13 +171,13 @@ async def handle_log_bottle(request: web.Request) -> web.Response:
 
     async with aiohttp.ClientSession() as session:
         try:
-            api = await _authenticated_api(session)
-            child_uid = await _resolve_child_uid(api)
+            api = await _authenticated_api(session, creds)
+            child_uid = await _resolve_child_uid(api, creds)
             await api.log_bottle(
                 child_uid,
                 start_time=start_time,
                 amount=amount_oz,
-                bottle_type=BOTTLE_TYPE,
+                bottle_type=creds["bottle_type"],
                 units="oz",
             )
         except Exception as err:  # noqa: BLE001 -- surfaced to the caller, not swallowed
@@ -176,6 +199,7 @@ async def handle_log_bottle(request: web.Request) -> web.Response:
 async def handle_update_bottle(request: web.Request) -> web.Response:
     try:
         body = await request.json()
+        creds = _extract_creds(body)
         start_time = datetime.fromisoformat(body["start_time_iso"])
         amount_oz = float(body["amount_oz"])
     except (KeyError, ValueError, TypeError) as err:
@@ -183,8 +207,8 @@ async def handle_update_bottle(request: web.Request) -> web.Response:
 
     async with aiohttp.ClientSession() as session:
         try:
-            api = await _authenticated_api(session)
-            child_uid = await _resolve_child_uid(api)
+            api = await _authenticated_api(session, creds)
+            child_uid = await _resolve_child_uid(api, creds)
             await _update_bottle_amount(api, child_uid, start_time.timestamp(), amount_oz)
         except Exception as err:  # noqa: BLE001 -- surfaced to the caller, not swallowed
             _LOGGER.exception("update_bottle failed")
@@ -197,7 +221,7 @@ async def handle_update_bottle(request: web.Request) -> web.Response:
 async def handle_list_bottles(request: web.Request) -> web.Response:
     """
     Real bottle-feed entries from Huckleberry itself, for reconciling
-    against bottlecaps' own `bottles` collection (the "pull" side of the
+    against bottlecaps' own `bottles` table (the "pull" side of the
     bidirectional sync -- entries logged straight in the Huckleberry app,
     bypassing bottlecaps entirely, still need to show up here).
 
@@ -207,7 +231,25 @@ async def handle_list_bottles(request: web.Request) -> web.Response:
     is deliberately not the thing that bounds what gets returned, since
     "the last ten bottles" (what this exists for) and "everything from the
     last N days" are two different, easily-confused things.
+
+    Credentials + limit/days come through as query params here (GET, not
+    POST) since this is a read with no request body in the original
+    single-tenant design; kept as query params for the multi-tenant version
+    too rather than changing this to a POST, to keep the diff small.
     """
+    try:
+        creds = _extract_creds(
+            {
+                "email": request.query.get("email"),
+                "password": request.query.get("password"),
+                "timezone": request.query.get("timezone"),
+                "bottle_type": request.query.get("bottle_type"),
+                "child_uid": request.query.get("child_uid"),
+            }
+        )
+    except KeyError as err:
+        return web.json_response({"ok": False, "error": f"bad request: {err}"}, status=400)
+
     limit = int(request.query.get("limit", "10"))
     days = int(request.query.get("days", "30"))
     end_time = datetime.now(timezone.utc)
@@ -215,8 +257,8 @@ async def handle_list_bottles(request: web.Request) -> web.Response:
 
     async with aiohttp.ClientSession() as session:
         try:
-            api = await _authenticated_api(session)
-            child_uid = await _resolve_child_uid(api)
+            api = await _authenticated_api(session, creds)
+            child_uid = await _resolve_child_uid(api, creds)
             intervals = await api.list_feed_intervals(child_uid, start_time, end_time)
         except Exception as err:  # noqa: BLE001 -- surfaced to the caller, not swallowed
             _LOGGER.exception("list_bottles failed")
@@ -241,7 +283,7 @@ async def handle_list_bottles(request: web.Request) -> web.Response:
 def make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/healthz", handle_healthz)
-    app.router.add_get("/whoami", handle_whoami)
+    app.router.add_post("/whoami", handle_whoami)
     app.router.add_post("/log-bottle", handle_log_bottle)
     app.router.add_post("/update-bottle", handle_update_bottle)
     app.router.add_get("/list-bottles", handle_list_bottles)

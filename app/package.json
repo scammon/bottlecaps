@@ -1,6 +1,6 @@
 {
   "name": "bottlecaps",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "mongodb": "^6.9.0",
+    "pg": "^8.13.0",
     "web-push": "^3.6.7"
   }
 }

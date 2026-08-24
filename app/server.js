@@ -1,74 +1,84 @@
 'use strict';
 
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
-const { MongoClient, ObjectId } = require('mongodb');
+const { Pool } = require('pg');
 const webpush = require('web-push');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/bottlecaps';
+const DATABASE_URL = process.env.DATABASE_URL;
 const TIMER_MS = parseInt(process.env.BOTTLE_TIMER_MS || String(60 * 60 * 1000), 10);
 const POLL_MS = parseInt(process.env.EXPIRY_POLL_MS || '15000', 10);
 const DISPLAY_TZ = process.env.DISPLAY_TZ || 'America/New_York';
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || '10', 10);
 const HUCKLEBERRY_URL = process.env.HUCKLEBERRY_URL || 'http://huckleberry:8080';
-// How close a bottlecaps loggedAt and a real Huckleberry entry's start time
-// have to be to be considered "the same bottle" during reconciliation.
 const HUCKLEBERRY_MATCH_TOLERANCE_MS = 5000;
 
-const DEFAULT_SETTINGS = { ounces: 3 };
+// DEV ONLY: lets the app be exercised locally without a live Dailey Auth
+// registration (Dailey Auth is tied to a real deployed dailey.cloud
+// project -- see requireAuth's comment). Set DEV_MODE=true and send
+// `X-Dev-User: <any-string-id>` to act as that user; first use
+// auto-provisions the users row. MUST NOT be set true in any real
+// deployment -- it bypasses authentication entirely.
+const DEV_MODE = process.env.DEV_MODE === 'true';
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
+const CREDENTIALS_ENCRYPTION_KEY = process.env.CREDENTIALS_ENCRYPTION_KEY;
 
+if (!DATABASE_URL) {
+  console.error('[bottlecaps] DATABASE_URL is required');
+  process.exit(1);
+}
 if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
   console.error('[bottlecaps] VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY are required for push notifications');
   process.exit(1);
 }
+if (!CREDENTIALS_ENCRYPTION_KEY || Buffer.from(CREDENTIALS_ENCRYPTION_KEY, 'hex').length !== 32) {
+  console.error('[bottlecaps] CREDENTIALS_ENCRYPTION_KEY must be a 32-byte hex string (64 chars) -- generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+  process.exit(1);
+}
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-
-let bottlesCollection;
-let subscriptionsCollection;
-let settingsCollection;
-
-async function getSettings() {
-  const doc = await settingsCollection.findOne({ _id: 'singleton' });
-  return { ounces: doc?.ounces ?? DEFAULT_SETTINGS.ounces };
+if (DEV_MODE) {
+  console.warn('[bottlecaps] DEV_MODE=true -- authentication is BYPASSED. Never set this in a real deployment.');
 }
 
-// Ounces is a free-typed decimal now (the log-bottle modal's text field),
-// not a constrained 1-9 dropdown -- real bottles (including ones pulled in
-// from Huckleberry, converted from ml) commonly aren't whole numbers.
-// Still validated: positive, sane upper bound, at most 2 decimal places.
-function parseOunces(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0 || n > 20) return null;
-  const cents = Math.round(n * 100);
-  if (Math.abs(cents - n * 100) > 1e-6) return null; // more than 2 decimal places
-  return cents / 100;
+const pool = new Pool({ connectionString: DATABASE_URL });
+
+// --- Credential encryption (AES-256-GCM) --------------------------------
+// Dailey encrypts env vars at rest, which covers CREDENTIALS_ENCRYPTION_KEY
+// itself -- it does not cover arbitrary table data, so Huckleberry
+// passwords get their own encryption layer here before ever touching the
+// database.
+const ENC_KEY = Buffer.from(CREDENTIALS_ENCRYPTION_KEY, 'hex');
+
+function encryptSecret(plaintext) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, enc]).toString('base64');
 }
 
-async function connectWithRetry(url, attempts = 20, delayMs = 1500) {
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      const client = new MongoClient(url);
-      await client.connect();
-      console.log(`[mongo] connected (attempt ${i})`);
-      return client;
-    } catch (err) {
-      console.log(`[mongo] connect attempt ${i}/${attempts} failed: ${err.message}`);
-      if (i === attempts) throw err;
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
+function decryptSecret(payload) {
+  const buf = Buffer.from(payload, 'base64');
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const enc = buf.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
 }
 
-function statusFromLatest(doc) {
-  if (!doc) {
+// --- Formatting helpers (unchanged from the single-tenant version) ------
+
+function statusFromLatest(row) {
+  if (!row) {
     return { loggedAt: null, expiresAt: null, remainingMs: 0, expired: true };
   }
-  const loggedAt = doc.loggedAt;
+  const loggedAt = row.logged_at;
   const expiresAt = new Date(loggedAt.getTime() + TIMER_MS);
   const remainingMs = Math.max(0, expiresAt.getTime() - Date.now());
   return {
@@ -79,7 +89,6 @@ function statusFromLatest(doc) {
   };
 }
 
-// H:MM:SS countdown, e.g. "3:42:07".
 function fmtCountdown(ms) {
   const totalSec = Math.max(0, Math.ceil(ms / 1000));
   const h = Math.floor(totalSec / 3600);
@@ -88,7 +97,6 @@ function fmtCountdown(ms) {
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-// Compact "3h 12m" / "12m 5s" / "45s" -- mirrors the web page's own format.
 function fmtCompact(ms) {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
   const d = Math.floor(totalSec / 86400);
@@ -102,189 +110,206 @@ function fmtCompact(ms) {
 }
 
 function fmtClock(date) {
-  return date.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: DISPLAY_TZ,
-  });
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: DISPLAY_TZ });
 }
 
-// Plain-text summary for the iOS Shortcuts widget -- deliberately does all
-// formatting server-side (fixed timezone, same style as the web UI) so the
-// Shortcut itself only needs a single "Get Contents of URL" action.
-function widgetText(doc) {
-  if (!doc) return "No bottle logged yet.\nOpen bottlecaps to start.";
-  const loggedAt = doc.loggedAt;
+function widgetText(row) {
+  if (!row) return "No bottle logged yet.\nOpen bottlecaps to start.";
+  const loggedAt = row.logged_at;
   const expiresAt = new Date(loggedAt.getTime() + TIMER_MS);
   const remainingMs = expiresAt.getTime() - Date.now();
   const agoLine = `started at ${fmtClock(loggedAt)}, ${fmtCompact(Date.now() - loggedAt.getTime())} ago`;
-  if (remainingMs <= 0) {
-    return `🍾 Timer's up\n${agoLine}`;
-  }
+  if (remainingMs <= 0) return `🍾 Timer's up\n${agoLine}`;
   return `${fmtCountdown(remainingMs)} left\n${agoLine}`;
 }
 
-/**
- * Sends a push notification to every stored subscription. Subscriptions
- * that the push service reports as gone (404/410 -- the browser/OS dropped
- * them) are removed so the collection doesn't accumulate dead entries.
- */
-async function broadcastPush(payload) {
-  const subs = await subscriptionsCollection.find().toArray();
-  if (subs.length === 0) {
-    console.log('[push] no subscriptions to notify');
-    return;
-  }
-  const body = JSON.stringify(payload);
-  await Promise.all(
-    subs.map(async (sub) => {
-      try {
-        await webpush.sendNotification(
-          { endpoint: sub.endpoint, keys: sub.keys },
-          body
-        );
-      } catch (err) {
-        const status = err && err.statusCode;
-        if (status === 404 || status === 410) {
-          console.log(`[push] subscription gone, removing: ${sub.endpoint.slice(-24)}`);
-          await subscriptionsCollection.deleteOne({ endpoint: sub.endpoint });
-        } else {
-          console.error(`[push] send failed (${status || 'unknown'}) for ${sub.endpoint.slice(-24)}: ${err.message}`);
-        }
-      }
-    })
-  );
+function parseOunces(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n > 20) return null;
+  const cents = Math.round(n * 100);
+  if (Math.abs(cents - n * 100) > 1e-6) return null;
+  return cents / 100;
 }
 
-/**
- * POSTs to the huckleberry sidecar service (see ./huckleberry), which wraps
- * py-huckleberry-api -- that library requires Python >=3.14, so it runs as
- * its own container rather than inside this Node image.
- */
-async function logToHuckleberry(loggedAt, ounces) {
+function rowToHistoryEntry(row) {
+  return {
+    id: row.id,
+    loggedAt: row.logged_at.toISOString(),
+    ounces: row.ounces === null ? null : Number(row.ounces),
+    pendingOunces: row.pending_ounces === null ? null : Number(row.pending_ounces),
+    huckleberryLogged: row.huckleberry_logged,
+  };
+}
+
+// --- Auth --------------------------------------------------------------
+//
+// Dailey Auth ("Dailey Core") issues a JWT whose `tenant` claim identifies
+// the logged-in account; the app is expected to verify that JWT on each
+// request. The exact verification mechanism (JWKS endpoint vs. a shared
+// secret, where the token is delivered -- cookie vs. Authorization header)
+// isn't fully known yet since it's only observable once `dailey_auth_enable`
+// has actually been run against a real deployed project and we can see
+// Dailey Core's own docs/response shape for this app's client id.
+//
+// TODO(dailey-auth): replace verifyDaileyToken's body once the project is
+// registered with Dailey Auth for real. Everything downstream of it
+// (getOrCreateUser, req.user.id scoping on every route) is already correct
+// and shouldn't need to change.
+async function verifyDaileyToken(token) {
+  throw new Error('Dailey Auth verification not yet wired up -- see verifyDaileyToken TODO');
+}
+
+async function getOrCreateUser(tenant, email, name) {
+  const existing = await pool.query('SELECT * FROM users WHERE dailey_tenant = $1', [tenant]);
+  if (existing.rows.length > 0) return existing.rows[0];
+  const widgetToken = crypto.randomBytes(24).toString('base64url');
+  const inserted = await pool.query(
+    'INSERT INTO users (dailey_tenant, email, name, widget_token) VALUES ($1, $2, $3, $4) RETURNING *',
+    [tenant, email || null, name || null, widgetToken]
+  );
+  return inserted.rows[0];
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    if (DEV_MODE) {
+      const devUser = req.header('X-Dev-User');
+      if (!devUser) return res.status(401).json({ error: 'missing_x_dev_user_header' });
+      req.user = await getOrCreateUser(`dev:${devUser}`, null, devUser);
+      return next();
+    }
+    const auth = req.header('Authorization') || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'missing_token' });
+    const claims = await verifyDaileyToken(token);
+    req.user = await getOrCreateUser(claims.tenant, claims.email, claims.name);
+    next();
+  } catch (err) {
+    console.error('[auth] error', err);
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+// --- Huckleberry -----------------------------------------------------------
+
+async function getHuckleberryCreds(userId) {
+  const res = await pool.query('SELECT * FROM huckleberry_credentials WHERE user_id = $1', [userId]);
+  if (res.rows.length === 0) return null;
+  const row = res.rows[0];
+  return {
+    email: row.email,
+    password: decryptSecret(row.encrypted_password),
+    child_uid: row.child_uid,
+    bottle_type: row.bottle_type,
+    timezone: row.timezone,
+  };
+}
+
+async function logToHuckleberry(creds, loggedAt, ounces) {
   const res = await fetch(`${HUCKLEBERRY_URL}/log-bottle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ start_time_iso: loggedAt.toISOString(), amount_oz: ounces }),
+    body: JSON.stringify({ ...creds, start_time_iso: loggedAt.toISOString(), amount_oz: ounces }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`huckleberry service ${res.status}: ${text}`);
-  }
+  if (!res.ok) throw new Error(`huckleberry service ${res.status}: ${await res.text().catch(() => '')}`);
 }
 
-// Corrects the amount on a bottle *already* logged to Huckleberry -- the
-// history table's "Update" action (edit-then-commit on an already-logged
-// row, as opposed to "Log", which creates a brand new entry).
-async function updateHuckleberryAmount(loggedAt, ounces) {
+async function updateHuckleberryAmount(creds, loggedAt, ounces) {
   const res = await fetch(`${HUCKLEBERRY_URL}/update-bottle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ start_time_iso: loggedAt.toISOString(), amount_oz: ounces }),
+    body: JSON.stringify({ ...creds, start_time_iso: loggedAt.toISOString(), amount_oz: ounces }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`huckleberry service ${res.status}: ${text}`);
-  }
+  if (!res.ok) throw new Error(`huckleberry service ${res.status}: ${await res.text().catch(() => '')}`);
+}
+
+async function listHuckleberryBottles(creds, limit) {
+  const params = new URLSearchParams({ ...creds, limit: String(limit) });
+  const res = await fetch(`${HUCKLEBERRY_URL}/list-bottles?${params}`);
+  if (!res.ok) throw new Error(`huckleberry service ${res.status}`);
+  return (await res.json()).bottles || [];
 }
 
 /**
- * Pulls Huckleberry's own last-HISTORY_LIMIT bottle-feed entries and
- * reconciles them against bottlecaps' `bottles` collection -- the two
- * directions of the "bidirectional sync":
- *  - a bottlecaps bottle that's now confirmed present in Huckleberry (matched
- *    by start time within HUCKLEBERRY_MATCH_TOLERANCE_MS) gets huckleberryLogged
- *    self-healed to true, in case it was logged by some other path;
- *  - a Huckleberry entry with no matching bottlecaps document (logged straight
- *    in the Huckleberry app) gets inserted as a synthetic bottlecaps bottle
- *    (tagged source: 'huckleberry'), so it counts toward the last-10 history
- *    and the average gap.
- * Only ever asks for/considers the last HISTORY_LIMIT Huckleberry entries --
- * NOT a wide date-range's worth -- so this can't backfill your entire feed
- * history into bottlecaps' own collection.
- * The insert is race-safe: `huckleberryStartIso` (the exact string
- * Huckleberry reported) is uniquely indexed, so two concurrent requests
- * both trying to insert the same missing entry collide on the duplicate key
- * and only one insert survives -- necessary because /api/history (which
- * calls this) has no other locking and can genuinely run concurrently
- * (multiple tabs/devices, the 30s poll).
- * Best-effort: any failure (huckleberry service down, etc.) is logged and
- * swallowed so /api/history still serves the local view.
+ * Pulls one user's last-HISTORY_LIMIT Huckleberry entries and reconciles
+ * them against their `bottles` rows -- same two-directional logic as the
+ * single-tenant version (self-heal huckleberry_logged on a timestamp match
+ * within tolerance; insert a synthetic row, tagged source='huckleberry',
+ * for anything with no local match), just scoped to one user_id throughout
+ * and using that user's own decrypted credentials. Skipped entirely for
+ * users with no Huckleberry credentials configured. Race-safety against
+ * concurrent /api/history calls comes from the DB's unique index on
+ * (user_id, huckleberry_start_iso), same role Mongo's partial unique index
+ * played -- a duplicate insert attempt just fails and is swallowed.
  */
-async function syncFromHuckleberry() {
+async function syncFromHuckleberry(userId) {
+  const creds = await getHuckleberryCreds(userId);
+  if (!creds) return;
+
   let remoteBottles;
   try {
-    const res = await fetch(`${HUCKLEBERRY_URL}/list-bottles?limit=${HISTORY_LIMIT}`);
-    if (!res.ok) throw new Error(`huckleberry service ${res.status}`);
-    const data = await res.json();
-    remoteBottles = data.bottles || [];
+    remoteBottles = await listHuckleberryBottles(creds, HISTORY_LIMIT);
   } catch (err) {
-    console.error(`[huckleberry-sync] list-bottles failed, serving local view only: ${err.message}`);
+    console.error(`[huckleberry-sync] user ${userId}: list-bottles failed, serving local view only: ${err.message}`);
     return;
   }
-
   if (remoteBottles.length === 0) return;
 
   const oldestRemoteMs = Math.min(...remoteBottles.map((b) => new Date(b.start_iso).getTime()));
-  const localBottles = await bottlesCollection
-    .find({ loggedAt: { $gte: new Date(oldestRemoteMs - HUCKLEBERRY_MATCH_TOLERANCE_MS) } })
-    .toArray();
+  const local = await pool.query(
+    'SELECT id, logged_at, huckleberry_logged FROM bottles WHERE user_id = $1 AND logged_at >= $2',
+    [userId, new Date(oldestRemoteMs - HUCKLEBERRY_MATCH_TOLERANCE_MS)]
+  );
+  const localBottles = local.rows;
 
   for (const remote of remoteBottles) {
     const remoteMs = new Date(remote.start_iso).getTime();
     const match = localBottles.find(
-      (b) => Math.abs(b.loggedAt.getTime() - remoteMs) <= HUCKLEBERRY_MATCH_TOLERANCE_MS
+      (b) => Math.abs(b.logged_at.getTime() - remoteMs) <= HUCKLEBERRY_MATCH_TOLERANCE_MS
     );
     if (match) {
-      if (!match.huckleberryLogged) {
-        await bottlesCollection.updateOne({ _id: match._id }, { $set: { huckleberryLogged: true } });
-        match.huckleberryLogged = true; // keep the in-memory copy consistent for this pass
+      if (!match.huckleberry_logged) {
+        await pool.query('UPDATE bottles SET huckleberry_logged = true WHERE id = $1', [match.id]);
+        match.huckleberry_logged = true;
       }
       continue;
     }
-    // No local record at all -- logged directly in the Huckleberry app.
     try {
-      const inserted = await bottlesCollection.insertOne({
-        loggedAt: new Date(remoteMs),
-        ounces: remote.amount_oz,
-        notified: true, // never went through our own expiry flow
-        huckleberryLogged: true,
-        source: 'huckleberry',
-        huckleberryStartIso: remote.start_iso,
-      });
-      localBottles.push({ _id: inserted.insertedId, loggedAt: new Date(remoteMs), huckleberryLogged: true });
-      console.log(`[huckleberry-sync] pulled in bottle from Huckleberry at ${remote.start_iso}`);
+      const inserted = await pool.query(
+        `INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged, source, huckleberry_start_iso)
+         VALUES ($1, $2, $3, true, true, 'huckleberry', $4) RETURNING id, logged_at, huckleberry_logged`,
+        [userId, new Date(remoteMs), remote.amount_oz, remote.start_iso]
+      );
+      localBottles.push(inserted.rows[0]);
+      console.log(`[huckleberry-sync] user ${userId}: pulled in bottle at ${remote.start_iso}`);
     } catch (err) {
-      if (err.code === 11000) {
-        // Another concurrent call already inserted this one -- fine, not a real error.
-        continue;
-      }
+      if (err.code === '23505') continue; // unique_violation -- another concurrent call already inserted it
       throw err;
     }
   }
 }
 
 /**
- * Runs on an interval. Sends a push notification once the latest bottle is
- * expired and hasn't been notified yet. (Huckleberry logging is manual now,
- * triggered per-row from the history table -- see POST /api/bottle/:id/log-
- * to-huckleberry.) Claimed via an atomic updateOne so this is safe across
- * restarts/replicas.
+ * Runs on an interval. For every user with an expired, not-yet-notified
+ * latest bottle, sends that user's push subscriptions the expiry alert.
+ * (Huckleberry logging stays manual, triggered per-row from the history
+ * table.) The UPDATE ... WHERE notified = false RETURNING claim is the
+ * multi-user equivalent of Mongo's per-document atomic updateOne claim --
+ * safe under concurrent ticks/replicas without a separate lock.
  */
 async function checkExpiryAndNotify() {
   try {
-    const latest = await bottlesCollection.find().sort({ loggedAt: -1 }).limit(1).next();
-    if (!latest || latest.notified) return;
-    const expiresAt = latest.loggedAt.getTime() + TIMER_MS;
-    if (Date.now() < expiresAt) return;
-
-    const claim = await bottlesCollection.updateOne(
-      { _id: latest._id, notified: { $ne: true } },
-      { $set: { notified: true } }
+    const due = await pool.query(
+      `UPDATE bottles b SET notified = true
+       WHERE b.notified = false
+         AND b.logged_at + ($1 || ' milliseconds')::interval <= now()
+         AND b.id = (SELECT id FROM bottles WHERE user_id = b.user_id ORDER BY logged_at DESC LIMIT 1)
+       RETURNING b.id, b.user_id`,
+      [TIMER_MS]
     );
-    if (claim.modifiedCount > 0) {
-      console.log(`[push] bottle ${latest._id} expired, notifying`);
-      await broadcastPush({
+    for (const row of due.rows) {
+      console.log(`[push] bottle ${row.id} (user ${row.user_id}) expired, notifying`);
+      await broadcastPush(row.user_id, {
         title: '🍾 bottlecaps',
         body: 'Time’s up — dispose of any remaining volume.',
       });
@@ -294,86 +319,137 @@ async function checkExpiryAndNotify() {
   }
 }
 
-async function main() {
-  const client = await connectWithRetry(MONGO_URL);
-  const db = client.db();
-  bottlesCollection = db.collection('bottles');
-  subscriptionsCollection = db.collection('subscriptions');
-  settingsCollection = db.collection('settings');
-  await bottlesCollection.createIndex({ loggedAt: -1 });
-  // Race-safe dedup for syncFromHuckleberry's synthetic inserts -- see its
-  // comment. Partial so it only applies to Huckleberry-sourced documents;
-  // bottlecaps-native bottles never have this field.
-  await bottlesCollection.createIndex(
-    { huckleberryStartIso: 1 },
-    { unique: true, partialFilterExpression: { huckleberryStartIso: { $exists: true } } }
+async function broadcastPush(userId, payload) {
+  const subs = await pool.query('SELECT * FROM push_subscriptions WHERE user_id = $1', [userId]);
+  if (subs.rows.length === 0) return;
+  const body = JSON.stringify(payload);
+  await Promise.all(
+    subs.rows.map(async (sub) => {
+      try {
+        await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body);
+      } catch (err) {
+        const status = err && err.statusCode;
+        if (status === 404 || status === 410) {
+          await pool.query('DELETE FROM push_subscriptions WHERE id = $1', [sub.id]);
+        } else {
+          console.error(`[push] send failed (${status || 'unknown'}) for user ${userId}: ${err.message}`);
+        }
+      }
+    })
   );
-  await subscriptionsCollection.createIndex({ endpoint: 1 }, { unique: true });
+}
+
+async function getSettings(userId) {
+  const res = await pool.query('SELECT default_ounces FROM settings WHERE user_id = $1', [userId]);
+  return { ounces: res.rows.length > 0 ? Number(res.rows[0].default_ounces) : 3 };
+}
+
+async function connectWithRetry(attempts = 20, delayMs = 1500) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      // Also verifies the schema has been applied, so startup fails fast
+      // with a clear error rather than surfacing confusing ones on the
+      // first request.
+      await pool.query('SELECT 1 FROM users LIMIT 1');
+      console.log(`[postgres] connected (attempt ${i})`);
+      return;
+    } catch (err) {
+      console.log(`[postgres] connect attempt ${i}/${attempts} failed: ${err.message}`);
+      if (i === attempts) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
+async function main() {
+  // depends_on only waits for the postgres *container* to start, not for
+  // Postgres itself to be ready to accept connections -- retry instead of
+  // relying on Docker's (much slower, noisier) whole-container restart loop.
+  await connectWithRetry();
 
   const app = express();
   app.use(express.json());
   app.use(express.static(path.join(__dirname, 'public')));
 
+  app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+  // Widget text is deliberately NOT behind requireAuth -- the whole point
+  // is a single no-JS "Get Contents of URL" Shortcuts action, which can't
+  // carry a bearer token. Identified instead by each user's own opaque,
+  // unguessable widget_token (see schema.sql).
+  app.get('/api/widget-text', async (req, res) => {
+    try {
+      const token = req.query.token;
+      if (!token) return res.status(400).type('text/plain').send('missing token');
+      const user = await pool.query('SELECT id FROM users WHERE widget_token = $1', [token]);
+      if (user.rows.length === 0) return res.status(404).type('text/plain').send('unknown token');
+      const latest = await pool.query(
+        'SELECT * FROM bottles WHERE user_id = $1 ORDER BY logged_at DESC LIMIT 1',
+        [user.rows[0].id]
+      );
+      res.type('text/plain').send(widgetText(latest.rows[0] || null));
+    } catch (err) {
+      console.error('[widget-text] error', err);
+      res.status(500).type('text/plain').send('bottlecaps: error');
+    }
+  });
+
+  app.use('/api', requireAuth);
+
+  app.get('/api/me', async (req, res) => {
+    res.json({ id: req.user.id, email: req.user.email, name: req.user.name, widgetToken: req.user.widget_token });
+  });
+
+  // Issues a fresh widget_token, invalidating the old one -- for when it's
+  // leaked (e.g. the Shortcut URL was shared/screenshotted). The old
+  // Shortcuts widget stops working immediately; the user re-does the
+  // one-action Shortcut setup with the new URL.
+  app.post('/api/widget-token/regenerate', async (req, res) => {
+    try {
+      const widgetToken = crypto.randomBytes(24).toString('base64url');
+      await pool.query('UPDATE users SET widget_token = $1 WHERE id = $2', [widgetToken, req.user.id]);
+      res.json({ widgetToken });
+    } catch (err) {
+      console.error('[widget-token/regenerate] error', err);
+      res.status(500).json({ error: 'failed' });
+    }
+  });
+
   app.get('/api/status', async (req, res) => {
     try {
-      const [latest, totalBottles] = await Promise.all([
-        bottlesCollection.find().sort({ loggedAt: -1 }).limit(1).next(),
-        bottlesCollection.countDocuments(),
-      ]);
-      res.json({ ...statusFromLatest(latest), totalBottles, timerMs: TIMER_MS });
+      const latest = await pool.query(
+        'SELECT * FROM bottles WHERE user_id = $1 ORDER BY logged_at DESC LIMIT 1',
+        [req.user.id]
+      );
+      const total = await pool.query('SELECT count(*) FROM bottles WHERE user_id = $1', [req.user.id]);
+      res.json({ ...statusFromLatest(latest.rows[0] || null), totalBottles: Number(total.rows[0].count), timerMs: TIMER_MS });
     } catch (err) {
       console.error('[status] error', err);
       res.status(500).json({ error: 'status_failed' });
     }
   });
 
-  // Last HISTORY_LIMIT bottles, each with the gap since the bottle before
-  // it, its ounces, and whether it's confirmed logged to Huckleberry.
-  // Pulls + reconciles Huckleberry's own history first (see
-  // syncFromHuckleberry) so entries logged directly in the Huckleberry app
-  // show up here too. Fetches one extra (older) document beyond the page
-  // so the oldest row shown still gets a real gap instead of null.
   app.get('/api/history', async (req, res) => {
     try {
-      await syncFromHuckleberry();
-      const docs = await bottlesCollection
-        .find()
-        .sort({ loggedAt: -1 })
-        .limit(HISTORY_LIMIT + 1)
-        .toArray();
-      const page = docs.slice(0, HISTORY_LIMIT);
-      const rows = page.map((doc, i) => {
-        const prev = docs[i + 1];
+      await syncFromHuckleberry(req.user.id);
+      const docs = await pool.query(
+        'SELECT * FROM bottles WHERE user_id = $1 ORDER BY logged_at DESC LIMIT $2',
+        [req.user.id, HISTORY_LIMIT + 1]
+      );
+      const page = docs.rows.slice(0, HISTORY_LIMIT);
+      const rows = page.map((row, i) => {
+        const prev = docs.rows[i + 1];
         return {
-          id: doc._id.toString(),
-          loggedAt: doc.loggedAt.toISOString(),
-          ounces: doc.ounces ?? null,
-          pendingOunces: doc.pendingOunces ?? null,
-          huckleberryLogged: !!doc.huckleberryLogged,
-          gapMs: prev ? doc.loggedAt.getTime() - prev.loggedAt.getTime() : null,
+          ...rowToHistoryEntry(row),
+          gapMs: prev ? row.logged_at.getTime() - prev.logged_at.getTime() : null,
         };
       });
       const gaps = rows.map((r) => r.gapMs).filter((g) => g !== null);
-      const avgGapMs = gaps.length > 0
-        ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)
-        : null;
+      const avgGapMs = gaps.length > 0 ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null;
       res.json({ rows, avgGapMs });
     } catch (err) {
       console.error('[history] error', err);
       res.status(500).json({ error: 'history_failed' });
-    }
-  });
-
-  // Plain text, meant for the iOS Shortcuts app widget: a single
-  // "Get Contents of URL" action can use this response directly with no
-  // JSON parsing steps of its own.
-  app.get('/api/widget-text', async (req, res) => {
-    try {
-      const latest = await bottlesCollection.find().sort({ loggedAt: -1 }).limit(1).next();
-      res.type('text/plain').send(widgetText(latest));
-    } catch (err) {
-      console.error('[widget-text] error', err);
-      res.status(500).type('text/plain').send('bottlecaps: error');
     }
   });
 
@@ -383,43 +459,57 @@ async function main() {
       ounces = parseOunces(req.body.ounces);
       if (ounces === null) return res.status(400).json({ error: 'invalid_ounces' });
     } else {
-      ounces = (await getSettings()).ounces; // fallback if the client omits it
+      ounces = (await getSettings(req.user.id)).ounces;
     }
     try {
       const loggedAt = new Date();
-      await bottlesCollection.insertOne({
-        loggedAt,
-        ounces,
-        notified: false,
-        huckleberryLogged: false,
-      });
-      // Remember this as the default the log-bottle modal pre-fills next time.
-      await settingsCollection.updateOne({ _id: 'singleton' }, { $set: { ounces } }, { upsert: true });
-      const totalBottles = await bottlesCollection.countDocuments();
-      res.json({ ...statusFromLatest({ loggedAt }), totalBottles, timerMs: TIMER_MS });
+      await pool.query(
+        'INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged) VALUES ($1, $2, $3, false, false)',
+        [req.user.id, loggedAt, ounces]
+      );
+      await pool.query(
+        `INSERT INTO settings (user_id, default_ounces) VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET default_ounces = $2`,
+        [req.user.id, ounces]
+      );
+      const total = await pool.query('SELECT count(*) FROM bottles WHERE user_id = $1', [req.user.id]);
+      res.json({ ...statusFromLatest({ logged_at: loggedAt }), totalBottles: Number(total.rows[0].count), timerMs: TIMER_MS });
     } catch (err) {
       console.error('[bottle] error', err);
       res.status(500).json({ error: 'log_failed' });
     }
   });
 
-  // Deletes any bottle record outright -- the history table's swipe-further
-  // "Delete" action. Same Huckleberry-logged guard as PATCH: once a bottle
-  // is confirmed logged, bottlecaps' copy needs to stay a truthful record
-  // rather than silently vanishing out from under the real Huckleberry entry.
-  app.delete('/api/bottle/:id', async (req, res) => {
-    let _id;
+  app.post('/api/bottle/cancel', async (req, res) => {
     try {
-      _id = new ObjectId(req.params.id);
-    } catch {
-      return res.status(400).json({ error: 'invalid_id' });
-    }
-    try {
-      const bottle = await bottlesCollection.findOne({ _id });
-      if (!bottle) return res.status(404).json({ error: 'not_found' });
-      if (bottle.huckleberryLogged) return res.status(409).json({ error: 'already_logged' });
+      const latest = await pool.query(
+        'SELECT * FROM bottles WHERE user_id = $1 ORDER BY logged_at DESC LIMIT 1',
+        [req.user.id]
+      );
+      const bottle = latest.rows[0];
+      if (!bottle) return res.status(404).json({ error: 'no_active_bottle' });
+      if (bottle.logged_at.getTime() + TIMER_MS <= Date.now()) return res.status(409).json({ error: 'not_active' });
 
-      await bottlesCollection.deleteOne({ _id });
+      await pool.query('DELETE FROM bottles WHERE id = $1', [bottle.id]);
+      const newLatest = await pool.query(
+        'SELECT * FROM bottles WHERE user_id = $1 ORDER BY logged_at DESC LIMIT 1',
+        [req.user.id]
+      );
+      const total = await pool.query('SELECT count(*) FROM bottles WHERE user_id = $1', [req.user.id]);
+      res.json({ ...statusFromLatest(newLatest.rows[0] || null), totalBottles: Number(total.rows[0].count), timerMs: TIMER_MS });
+    } catch (err) {
+      console.error('[bottle/cancel] error', err);
+      res.status(500).json({ error: 'cancel_failed' });
+    }
+  });
+
+  app.delete('/api/bottle/:id', async (req, res) => {
+    try {
+      const found = await pool.query('SELECT * FROM bottles WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+      const bottle = found.rows[0];
+      if (!bottle) return res.status(404).json({ error: 'not_found' });
+      if (bottle.huckleberry_logged) return res.status(409).json({ error: 'already_logged' });
+      await pool.query('DELETE FROM bottles WHERE id = $1', [bottle.id]);
       res.json({ ok: true });
     } catch (err) {
       console.error('[bottle/delete] error', err);
@@ -427,45 +517,26 @@ async function main() {
     }
   });
 
-  // Edits a bottle's ounces. Two different things happen depending on
-  // whether it's already been logged to Huckleberry:
-  //  - not yet logged: `ounces` is updated directly (nothing external to
-  //    stay in sync with yet), and remembered as the new default for the
-  //    next bottle -- unchanged from before.
-  //  - already logged: bottlecaps' own record of what Huckleberry actually
-  //    has (`ounces`) is left alone, and the new value is staged in
-  //    `pendingOunces` instead. It only takes effect -- pushed to the real
-  //    Huckleberry entry -- when the "Update" button (POST .../update-
-  //    huckleberry, below) is pressed. Staging it server-side (rather than
-  //    just in the browser) means it survives a page reload or the 30s
-  //    auto-refresh instead of silently evaporating.
-  //  Selecting the value that's already current (for whichever of the two
-  //  above is the current one) clears any pending edit rather than staging
-  //  a no-op, so re-selecting the original value is how you back out of an
-  //  accidental edit.
   app.patch('/api/bottle/:id', async (req, res) => {
     const ounces = parseOunces(req.body?.ounces);
-    if (ounces === null) {
-      return res.status(400).json({ error: 'invalid_ounces' });
-    }
-    let _id;
+    if (ounces === null) return res.status(400).json({ error: 'invalid_ounces' });
     try {
-      _id = new ObjectId(req.params.id);
-    } catch {
-      return res.status(400).json({ error: 'invalid_id' });
-    }
-    try {
-      const bottle = await bottlesCollection.findOne({ _id });
+      const found = await pool.query('SELECT * FROM bottles WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+      const bottle = found.rows[0];
       if (!bottle) return res.status(404).json({ error: 'not_found' });
 
-      if (bottle.huckleberryLogged) {
-        const pendingOunces = ounces === bottle.ounces ? null : ounces;
-        await bottlesCollection.updateOne({ _id }, { $set: { pendingOunces } });
+      if (bottle.huckleberry_logged) {
+        const pendingOunces = ounces === Number(bottle.ounces) ? null : ounces;
+        await pool.query('UPDATE bottles SET pending_ounces = $1 WHERE id = $2', [pendingOunces, bottle.id]);
         return res.json({ ok: true, pendingOunces });
       }
 
-      await bottlesCollection.updateOne({ _id }, { $set: { ounces } });
-      await settingsCollection.updateOne({ _id: 'singleton' }, { $set: { ounces } }, { upsert: true });
+      await pool.query('UPDATE bottles SET ounces = $1 WHERE id = $2', [ounces, bottle.id]);
+      await pool.query(
+        `INSERT INTO settings (user_id, default_ounces) VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET default_ounces = $2`,
+        [req.user.id, ounces]
+      );
       res.json({ ok: true, ounces });
     } catch (err) {
       console.error('[bottle/patch] error', err);
@@ -473,32 +544,26 @@ async function main() {
     }
   });
 
-  // Manually logs one bottle to Huckleberry -- the only way it happens now
-  // (see checkExpiryAndNotify's comment; this used to be automatic-on-expiry
-  // gated by a since-removed "Log to Huckleberry" checkbox).
   app.post('/api/bottle/:id/log-to-huckleberry', async (req, res) => {
-    let _id;
     try {
-      _id = new ObjectId(req.params.id);
-    } catch {
-      return res.status(400).json({ error: 'invalid_id' });
-    }
-    try {
-      const bottle = await bottlesCollection.findOne({ _id });
+      const found = await pool.query('SELECT * FROM bottles WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+      const bottle = found.rows[0];
       if (!bottle) return res.status(404).json({ error: 'not_found' });
-      if (bottle.huckleberryLogged) return res.status(409).json({ error: 'already_logged' });
+      if (bottle.huckleberry_logged) return res.status(409).json({ error: 'already_logged' });
+      const creds = await getHuckleberryCreds(req.user.id);
+      if (!creds) return res.status(400).json({ error: 'no_huckleberry_credentials' });
 
-      const claim = await bottlesCollection.updateOne(
-        { _id, huckleberryLogged: { $ne: true } },
-        { $set: { huckleberryLogged: true } }
+      const claim = await pool.query(
+        'UPDATE bottles SET huckleberry_logged = true WHERE id = $1 AND huckleberry_logged = false',
+        [bottle.id]
       );
-      if (claim.modifiedCount === 0) return res.status(409).json({ error: 'already_logged' });
+      if (claim.rowCount === 0) return res.status(409).json({ error: 'already_logged' });
 
       try {
-        await logToHuckleberry(bottle.loggedAt, bottle.ounces ?? DEFAULT_SETTINGS.ounces);
+        await logToHuckleberry(creds, bottle.logged_at, Number(bottle.ounces ?? 3));
       } catch (err) {
-        await bottlesCollection.updateOne({ _id }, { $set: { huckleberryLogged: false } });
-        console.error(`[huckleberry] manual log failed for bottle ${_id}: ${err.message}`);
+        await pool.query('UPDATE bottles SET huckleberry_logged = false WHERE id = $1', [bottle.id]);
+        console.error(`[huckleberry] manual log failed for bottle ${bottle.id}: ${err.message}`);
         return res.status(502).json({ error: 'huckleberry_failed' });
       }
       res.json({ ok: true });
@@ -508,94 +573,105 @@ async function main() {
     }
   });
 
-  // Pushes a staged ounces correction (see PATCH above) to a bottle that's
-  // already logged to Huckleberry -- the history table's "Update" action.
-  // On failure, pendingOunces is left in place (not rolled back) so the
-  // row keeps showing "Update" and the next attempt retries the same edit,
-  // matching how log-to-huckleberry's own failure handling works.
   app.post('/api/bottle/:id/update-huckleberry', async (req, res) => {
-    let _id;
     try {
-      _id = new ObjectId(req.params.id);
-    } catch {
-      return res.status(400).json({ error: 'invalid_id' });
-    }
-    try {
-      const bottle = await bottlesCollection.findOne({ _id });
+      const found = await pool.query('SELECT * FROM bottles WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+      const bottle = found.rows[0];
       if (!bottle) return res.status(404).json({ error: 'not_found' });
-      if (!bottle.huckleberryLogged) return res.status(409).json({ error: 'not_logged_yet' });
-      if (bottle.pendingOunces === null || bottle.pendingOunces === undefined) {
-        return res.status(409).json({ error: 'no_pending_change' });
-      }
+      if (!bottle.huckleberry_logged) return res.status(409).json({ error: 'not_logged_yet' });
+      if (bottle.pending_ounces === null) return res.status(409).json({ error: 'no_pending_change' });
+      const creds = await getHuckleberryCreds(req.user.id);
+      if (!creds) return res.status(400).json({ error: 'no_huckleberry_credentials' });
 
       try {
-        await updateHuckleberryAmount(bottle.loggedAt, bottle.pendingOunces);
+        await updateHuckleberryAmount(creds, bottle.logged_at, Number(bottle.pending_ounces));
       } catch (err) {
-        console.error(`[huckleberry] update failed for bottle ${_id}: ${err.message}`);
+        console.error(`[huckleberry] update failed for bottle ${bottle.id}: ${err.message}`);
         return res.status(502).json({ error: 'huckleberry_failed' });
       }
-      await bottlesCollection.updateOne(
-        { _id },
-        { $set: { ounces: bottle.pendingOunces }, $unset: { pendingOunces: '' } }
-      );
-      res.json({ ok: true, ounces: bottle.pendingOunces });
+      await pool.query('UPDATE bottles SET ounces = pending_ounces, pending_ounces = NULL WHERE id = $1', [bottle.id]);
+      res.json({ ok: true, ounces: Number(bottle.pending_ounces) });
     } catch (err) {
       console.error('[bottle/update-huckleberry] error', err);
       res.status(500).json({ error: 'update_failed' });
     }
   });
 
-  // Discards the *active* (not-yet-expired) bottle -- used by the Cancel
-  // button. Refuses once the timer has already expired, since at that
-  // point it's history (and may already be logged to Huckleberry).
-  app.post('/api/bottle/cancel', async (req, res) => {
-    try {
-      const latest = await bottlesCollection.find().sort({ loggedAt: -1 }).limit(1).next();
-      if (!latest) return res.status(404).json({ error: 'no_active_bottle' });
-      const expiresAt = latest.loggedAt.getTime() + TIMER_MS;
-      if (Date.now() >= expiresAt) return res.status(409).json({ error: 'not_active' });
-
-      await bottlesCollection.deleteOne({ _id: latest._id });
-      const [newLatest, totalBottles] = await Promise.all([
-        bottlesCollection.find().sort({ loggedAt: -1 }).limit(1).next(),
-        bottlesCollection.countDocuments(),
-      ]);
-      res.json({ ...statusFromLatest(newLatest), totalBottles, timerMs: TIMER_MS });
-    } catch (err) {
-      console.error('[bottle/cancel] error', err);
-      res.status(500).json({ error: 'cancel_failed' });
-    }
-  });
-
   app.get('/api/settings', async (req, res) => {
     try {
-      res.json(await getSettings());
+      res.json(await getSettings(req.user.id));
     } catch (err) {
       console.error('[settings] error', err);
       res.status(500).json({ error: 'settings_failed' });
     }
   });
 
-  app.post('/api/settings', async (req, res) => {
-    if (req.body?.ounces === undefined) {
-      return res.status(400).json({ error: 'no_valid_fields' });
-    }
-    const ounces = parseOunces(req.body.ounces);
-    if (ounces === null) {
-      return res.status(400).json({ error: 'invalid_ounces' });
-    }
+  // --- Per-user Huckleberry credentials -----------------------------------
+  // GET never returns the password (or its ciphertext) -- only whether
+  // credentials are configured and the non-secret fields, matching how a
+  // credentials form should behave (write-only password field).
+  app.get('/api/huckleberry-credentials', async (req, res) => {
     try {
-      await settingsCollection.updateOne({ _id: 'singleton' }, { $set: { ounces } }, { upsert: true });
-      res.json(await getSettings());
+      const found = await pool.query('SELECT * FROM huckleberry_credentials WHERE user_id = $1', [req.user.id]);
+      if (found.rows.length === 0) return res.json({ configured: false });
+      const row = found.rows[0];
+      res.json({
+        configured: true,
+        email: row.email,
+        childUid: row.child_uid,
+        bottleType: row.bottle_type,
+        timezone: row.timezone,
+      });
     } catch (err) {
-      console.error('[settings] error', err);
-      res.status(500).json({ error: 'settings_failed' });
+      console.error('[huckleberry-credentials/get] error', err);
+      res.status(500).json({ error: 'failed' });
     }
   });
 
-  app.get('/api/vapid-public-key', (req, res) => {
-    res.json({ publicKey: VAPID_PUBLIC_KEY });
+  app.put('/api/huckleberry-credentials', async (req, res) => {
+    const { email, password, childUid, bottleType, timezone } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'email_required' });
+    try {
+      const existing = await pool.query(
+        'SELECT encrypted_password FROM huckleberry_credentials WHERE user_id = $1',
+        [req.user.id]
+      );
+      // Password is required on first-time setup, but optional on update --
+      // an empty/omitted password means "keep the one already on file"
+      // (the browser never gets it back to resend, per the write-only form).
+      let encryptedPassword;
+      if (password) {
+        encryptedPassword = encryptSecret(password);
+      } else if (existing.rows.length > 0) {
+        encryptedPassword = existing.rows[0].encrypted_password;
+      } else {
+        return res.status(400).json({ error: 'password_required' });
+      }
+      await pool.query(
+        `INSERT INTO huckleberry_credentials (user_id, email, encrypted_password, child_uid, bottle_type, timezone, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (user_id) DO UPDATE SET
+           email = $2, encrypted_password = $3, child_uid = $4, bottle_type = $5, timezone = $6, updated_at = now()`,
+        [req.user.id, email, encryptedPassword, childUid || null, bottleType || 'Formula', timezone || 'America/New_York']
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[huckleberry-credentials/put] error', err);
+      res.status(500).json({ error: 'failed' });
+    }
   });
+
+  app.delete('/api/huckleberry-credentials', async (req, res) => {
+    try {
+      await pool.query('DELETE FROM huckleberry_credentials WHERE user_id = $1', [req.user.id]);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[huckleberry-credentials/delete] error', err);
+      res.status(500).json({ error: 'failed' });
+    }
+  });
+
+  app.get('/api/vapid-public-key', (req, res) => res.json({ publicKey: VAPID_PUBLIC_KEY }));
 
   app.post('/api/subscribe', async (req, res) => {
     const sub = req.body;
@@ -603,10 +679,10 @@ async function main() {
       return res.status(400).json({ error: 'invalid_subscription' });
     }
     try {
-      await subscriptionsCollection.updateOne(
-        { endpoint: sub.endpoint },
-        { $set: { endpoint: sub.endpoint, keys: sub.keys, updatedAt: new Date() } },
-        { upsert: true }
+      await pool.query(
+        `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, updated_at) VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (user_id, endpoint) DO UPDATE SET p256dh = $3, auth = $4, updated_at = now()`,
+        [req.user.id, sub.endpoint, sub.keys.p256dh, sub.keys.auth]
       );
       res.json({ ok: true });
     } catch (err) {
@@ -619,7 +695,7 @@ async function main() {
     const { endpoint } = req.body || {};
     if (!endpoint) return res.status(400).json({ error: 'missing_endpoint' });
     try {
-      await subscriptionsCollection.deleteOne({ endpoint });
+      await pool.query('DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [req.user.id, endpoint]);
       res.json({ ok: true });
     } catch (err) {
       console.error('[unsubscribe] error', err);

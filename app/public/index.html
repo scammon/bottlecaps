@@ -347,10 +347,185 @@
     margin-bottom: 12px;
   }
   #ounces-confirm:disabled { opacity: 0.5; cursor: default; }
+
+  /* --- Sign-in (DEV MODE ONLY -- see the JS comment on authHeaders) --- */
+  #signin-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+    z-index: 20;
+  }
+  #signin-screen.hidden { display: none; }
+  #signin-screen .dev-badge {
+    color: var(--danger);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 700;
+    border: 1px solid var(--danger);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+  #signin-screen p {
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+    max-width: 280px;
+    margin: 0;
+  }
+  #signin-input {
+    width: 100%;
+    max-width: 260px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid #2b2f3d;
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 1rem;
+    text-align: center;
+  }
+  #signin-confirm {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 32px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* --- Header bar (user + settings + sign out) --- */
+  #header-bar {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  #header-bar .user-name { font-weight: 600; color: var(--text); }
+  #header-bar button {
+    background: none;
+    border: 1px solid #2b2f3d;
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  #header-bar .header-actions { display: flex; gap: 8px; }
+
+  /* --- Settings modal --- */
+  #settings-modal .modal { max-width: 360px; text-align: left; }
+  #settings-modal h3 {
+    margin: 0 0 12px;
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  #settings-modal .field { margin-bottom: 12px; }
+  #settings-modal label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  #settings-modal input, #settings-modal select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid #2b2f3d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 0.9rem;
+  }
+  #hb-creds-status {
+    font-size: 0.8rem;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  #hb-creds-status.configured { color: var(--accent); }
+  #hb-creds-status.not-configured { color: var(--muted); }
+  #settings-modal .row-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  #settings-modal .row-actions button {
+    flex: 1;
+    padding: 10px 0;
+    border-radius: 10px;
+    border: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #hb-creds-save { background: var(--accent); color: white; }
+  #hb-creds-remove { background: #2b2f3d; color: var(--text); }
+  #settings-modal .divider {
+    border: none;
+    border-top: 1px solid #2b2f3d;
+    margin: 18px 0;
+  }
+  #widget-url-box {
+    background: var(--bg);
+    border: 1px solid #2b2f3d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 0.72rem;
+    word-break: break-all;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  #settings-close {
+    width: 100%;
+    margin-top: 16px;
+    padding: 10px 0;
+    border-radius: 10px;
+    border: none;
+    background: #2b2f3d;
+    color: var(--text);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #hb-creds-error {
+    color: var(--danger);
+    font-size: 0.78rem;
+    min-height: 1.1em;
+    margin-bottom: 8px;
+  }
 </style>
 </head>
 <body>
+  <div id="signin-screen">
+    <span class="dev-badge">Dev sign-in</span>
+    <h1>bottlecaps</h1>
+    <p>Real sign-in (Dailey Auth) isn't wired up yet -- enter any name to act as that user for local testing. Different names get completely separate data.</p>
+    <input id="signin-input" type="text" placeholder="e.g. alice" autocapitalize="off" autocorrect="off">
+    <button id="signin-confirm">Continue</button>
+  </div>
+
   <div class="hero">
+    <div id="header-bar">
+      <span class="user-name" id="header-user-name"></span>
+      <div class="header-actions">
+        <button id="open-settings">Settings</button>
+        <button id="sign-out">Sign out</button>
+      </div>
+    </div>
     <h1>bottlecaps</h1>
     <div id="timer">--:--:--</div>
     <button id="button">Log a bottle</button>
@@ -380,6 +555,52 @@
         <button id="ounces-cancel">Cancel</button>
         <button id="ounces-confirm">Log bottle</button>
       </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3>Huckleberry account</h3>
+      <div id="hb-creds-status" class="not-configured">Not configured</div>
+      <div id="hb-creds-error"></div>
+      <div class="field">
+        <label for="hb-email">Email</label>
+        <input id="hb-email" type="email" autocapitalize="off" autocorrect="off">
+      </div>
+      <div class="field">
+        <label for="hb-password">Password</label>
+        <input id="hb-password" type="password" placeholder="(unchanged if left blank)">
+      </div>
+      <div class="field">
+        <label for="hb-bottle-type">Bottle type</label>
+        <select id="hb-bottle-type">
+          <option>Formula</option>
+          <option>Breast Milk</option>
+          <option>Cow Milk</option>
+          <option>Goat Milk</option>
+          <option>Soy Milk</option>
+          <option>Tube Feeding</option>
+          <option>Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="hb-child-uid">Child ID (only needed for multi-child accounts)</label>
+        <input id="hb-child-uid" type="text" placeholder="leave blank to auto-detect">
+      </div>
+      <div class="row-actions">
+        <button id="hb-creds-remove">Remove</button>
+        <button id="hb-creds-save">Save</button>
+      </div>
+
+      <hr class="divider">
+
+      <h3>iOS Shortcuts widget</h3>
+      <div id="widget-url-box"></div>
+      <div class="row-actions">
+        <button id="widget-token-regenerate">Regenerate link</button>
+      </div>
+
+      <button id="settings-close">Close</button>
     </div>
   </div>
 
@@ -426,9 +647,83 @@
   const $deleteModal = document.getElementById('delete-modal');
   const $deleteKeep = document.getElementById('delete-keep');
   const $deleteConfirm = document.getElementById('delete-confirm');
+  const $signinScreen = document.getElementById('signin-screen');
+  const $signinInput = document.getElementById('signin-input');
+  const $signinConfirm = document.getElementById('signin-confirm');
+  const $headerUserName = document.getElementById('header-user-name');
+  const $openSettings = document.getElementById('open-settings');
+  const $signOut = document.getElementById('sign-out');
+  const $settingsModal = document.getElementById('settings-modal');
+  const $settingsClose = document.getElementById('settings-close');
+  const $hbCredsStatus = document.getElementById('hb-creds-status');
+  const $hbCredsError = document.getElementById('hb-creds-error');
+  const $hbEmail = document.getElementById('hb-email');
+  const $hbPassword = document.getElementById('hb-password');
+  const $hbBottleType = document.getElementById('hb-bottle-type');
+  const $hbChildUid = document.getElementById('hb-child-uid');
+  const $hbCredsSave = document.getElementById('hb-creds-save');
+  const $hbCredsRemove = document.getElementById('hb-creds-remove');
+  const $widgetUrlBox = document.getElementById('widget-url-box');
+  const $widgetTokenRegenerate = document.getElementById('widget-token-regenerate');
 
   let expiresAtMs = null;
   let loggedAtMs = null;
+
+  // --- Auth ------------------------------------------------------------
+  // DEV MODE ONLY. Dailey Auth isn't wired up server-side yet -- see
+  // server.js's verifyDaileyToken TODO. Once it is, this whole block gets
+  // replaced with real bearer-token handling (obtain a token from Dailey's
+  // login flow, store it, send it as `Authorization: Bearer <token>`
+  // instead of X-Dev-User). apiFetch() is the seam: every call site below
+  // already goes through it, so nothing else in this file should need to
+  // change when that swap happens.
+  const DEV_USER_KEY = 'bottlecaps_dev_user';
+
+  function getDevUser() { return localStorage.getItem(DEV_USER_KEY); }
+  function setDevUser(name) { localStorage.setItem(DEV_USER_KEY, name); }
+  function clearDevUser() { localStorage.removeItem(DEV_USER_KEY); }
+
+  function authHeaders() {
+    const devUser = getDevUser();
+    return devUser ? { 'X-Dev-User': devUser } : {};
+  }
+
+  async function apiFetch(url, options = {}) {
+    const res = await fetch(url, {
+      ...options,
+      headers: { ...(options.headers || {}), ...authHeaders() },
+    });
+    if (res.status === 401) {
+      clearDevUser();
+      showSignIn();
+    }
+    return res;
+  }
+
+  function showSignIn() {
+    $signinScreen.classList.remove('hidden');
+  }
+  function hideSignIn() {
+    $signinScreen.classList.add('hidden');
+  }
+
+  $signinConfirm.addEventListener('click', () => {
+    const name = $signinInput.value.trim();
+    if (!name) return;
+    setDevUser(name);
+    // Reload rather than calling boot() in place -- simpler than tracking
+    // and tearing down setInterval timers/module state for a sign-out ->
+    // sign-in-as-someone-else cycle within the same page load.
+    location.reload();
+  });
+  $signinInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $signinConfirm.click();
+  });
+
+  $signOut.addEventListener('click', () => {
+    clearDevUser();
+    location.reload();
+  });
 
   function fmt(ms) {
     if (ms <= 0) return "00:00:00";
@@ -500,13 +795,13 @@
   }
 
   async function fetchStatus() {
-    const res = await fetch('/api/status');
+    const res = await apiFetch('/api/status');
     if (!res.ok) throw new Error('status fetch failed');
     return res.json();
   }
 
   async function logBottle(ounces) {
-    const res = await fetch('/api/bottle', {
+    const res = await apiFetch('/api/bottle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ounces }),
@@ -542,7 +837,7 @@
   }
 
   async function fetchHistory() {
-    const res = await fetch('/api/history');
+    const res = await apiFetch('/api/history');
     if (!res.ok) throw new Error('history fetch failed');
     return res.json();
   }
@@ -625,7 +920,7 @@
   }
 
   async function patchOunces(id, ounces) {
-    const res = await fetch(`/api/bottle/${id}`, {
+    const res = await apiFetch(`/api/bottle/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ounces }),
@@ -633,12 +928,25 @@
     if (!res.ok) throw new Error('ounces update failed');
   }
 
+  async function handleHuckleberryError(res, btn, fallbackLabel) {
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* not json */ }
+    if (body.error === 'no_huckleberry_credentials') {
+      if (confirm('Huckleberry isn’t set up yet. Open Settings now?')) {
+        $settingsModal.classList.remove('hidden');
+        loadSettingsModal();
+      }
+    }
+    btn.disabled = false;
+    btn.textContent = fallbackLabel;
+  }
+
   async function logRowToHuckleberry(id, btn) {
     btn.disabled = true;
     btn.textContent = 'Logging…';
     try {
-      const res = await fetch(`/api/bottle/${id}/log-to-huckleberry`, { method: 'POST' });
-      if (!res.ok) throw new Error('log-to-huckleberry failed');
+      const res = await apiFetch(`/api/bottle/${id}/log-to-huckleberry`, { method: 'POST' });
+      if (!res.ok) return handleHuckleberryError(res, btn, 'Log');
       refreshHistory();
     } catch (e) {
       btn.disabled = false;
@@ -650,8 +958,8 @@
     btn.disabled = true;
     btn.textContent = 'Updating…';
     try {
-      const res = await fetch(`/api/bottle/${id}/update-huckleberry`, { method: 'POST' });
-      if (!res.ok) throw new Error('update-huckleberry failed');
+      const res = await apiFetch(`/api/bottle/${id}/update-huckleberry`, { method: 'POST' });
+      if (!res.ok) return handleHuckleberryError(res, btn, 'Update');
       refreshHistory();
     } catch (e) {
       btn.disabled = false;
@@ -789,7 +1097,7 @@
     showOuncesError('');
     let prefill = 3;
     try {
-      prefill = (await fetch('/api/settings').then((r) => r.json())).ounces;
+      prefill = (await apiFetch('/api/settings').then((r) => r.json())).ounces;
     } catch (e) { /* fall back to 3 */ }
     $ouncesInput.value = prefill.toFixed(2);
     $ouncesModal.classList.remove('hidden');
@@ -850,7 +1158,7 @@
     if (!pendingDeleteId) return;
     $deleteConfirm.disabled = true;
     try {
-      await fetch(`/api/bottle/${pendingDeleteId}`, { method: 'DELETE' });
+      await apiFetch(`/api/bottle/${pendingDeleteId}`, { method: 'DELETE' });
       refreshHistory();
       refreshFromServer();
     } catch (e) { /* history refresh will just show the row still there */ }
@@ -872,7 +1180,7 @@
   $modalDiscard.addEventListener('click', async () => {
     $modalDiscard.disabled = true;
     try {
-      const status = await fetch('/api/bottle/cancel', { method: 'POST' }).then((r) => r.json());
+      const status = await apiFetch('/api/bottle/cancel', { method: 'POST' }).then((r) => r.json());
       applyStatus(status);
       refreshHistory();
     } catch (e) {
@@ -881,6 +1189,101 @@
       $modalDiscard.disabled = false;
       $cancelModal.classList.add('hidden');
     }
+  });
+
+  // --- Settings modal: Huckleberry credentials + widget token ---------
+
+  function renderWidgetUrl(token) {
+    const url = `${location.origin}/api/widget-text?token=${token}`;
+    $widgetUrlBox.textContent = url;
+  }
+
+  async function loadSettingsModal() {
+    $hbCredsError.textContent = '';
+    $hbPassword.value = '';
+    try {
+      const creds = await apiFetch('/api/huckleberry-credentials').then((r) => r.json());
+      if (creds.configured) {
+        $hbCredsStatus.textContent = `Configured — ${creds.email}`;
+        $hbCredsStatus.className = 'configured';
+        $hbEmail.value = creds.email;
+        $hbBottleType.value = creds.bottleType;
+        $hbChildUid.value = creds.childUid || '';
+      } else {
+        $hbCredsStatus.textContent = 'Not configured — "Log to Huckleberry" won’t work until this is set up.';
+        $hbCredsStatus.className = 'not-configured';
+        $hbEmail.value = '';
+        $hbBottleType.value = 'Formula';
+        $hbChildUid.value = '';
+      }
+    } catch (e) {
+      $hbCredsError.textContent = 'Could not load Huckleberry settings.';
+    }
+    try {
+      const me = await apiFetch('/api/me').then((r) => r.json());
+      renderWidgetUrl(me.widgetToken);
+    } catch (e) { /* leave the box as-is */ }
+  }
+
+  $openSettings.addEventListener('click', () => {
+    $settingsModal.classList.remove('hidden');
+    loadSettingsModal();
+  });
+  $settingsClose.addEventListener('click', () => $settingsModal.classList.add('hidden'));
+  $settingsModal.addEventListener('click', (e) => {
+    if (e.target === $settingsModal) $settingsModal.classList.add('hidden');
+  });
+
+  $hbCredsSave.addEventListener('click', async () => {
+    $hbCredsError.textContent = '';
+    const email = $hbEmail.value.trim();
+    const password = $hbPassword.value;
+    const alreadyConfigured = $hbCredsStatus.className === 'configured';
+    if (!email || (!password && !alreadyConfigured)) {
+      $hbCredsError.textContent = 'Email and password are required.';
+      return;
+    }
+    $hbCredsSave.disabled = true;
+    try {
+      const payload = {
+        email,
+        bottleType: $hbBottleType.value,
+        childUid: $hbChildUid.value.trim() || null,
+      };
+      if (password) payload.password = password; // blank = keep existing password
+      const res = await apiFetch('/api/huckleberry-credentials', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('save failed');
+      await loadSettingsModal();
+    } catch (e) {
+      $hbCredsError.textContent = 'Could not save — check the server.';
+    } finally {
+      $hbCredsSave.disabled = false;
+    }
+  });
+
+  $hbCredsRemove.addEventListener('click', async () => {
+    $hbCredsRemove.disabled = true;
+    try {
+      await apiFetch('/api/huckleberry-credentials', { method: 'DELETE' });
+      await loadSettingsModal();
+    } catch (e) {
+      $hbCredsError.textContent = 'Could not remove — check the server.';
+    } finally {
+      $hbCredsRemove.disabled = false;
+    }
+  });
+
+  $widgetTokenRegenerate.addEventListener('click', async () => {
+    $widgetTokenRegenerate.disabled = true;
+    try {
+      const { widgetToken } = await apiFetch('/api/widget-token/regenerate', { method: 'POST' }).then((r) => r.json());
+      renderWidgetUrl(widgetToken);
+    } catch (e) { /* leave the old URL displayed */ }
+    $widgetTokenRegenerate.disabled = false;
   });
 
   function updateNotifBanner() {
@@ -907,13 +1310,13 @@
       const reg = await navigator.serviceWorker.ready;
       let sub = await reg.pushManager.getSubscription();
       if (!sub) {
-        const { publicKey } = await fetch('/api/vapid-public-key').then((r) => r.json());
+        const { publicKey } = await apiFetch('/api/vapid-public-key').then((r) => r.json());
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(publicKey),
         });
       }
-      await fetch('/api/subscribe', {
+      await apiFetch('/api/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sub),
@@ -947,19 +1350,33 @@
     }
   }
 
-  updateNotifBanner();
-  refreshFromServer();
-  refreshHistory();
-  setInterval(tick, 1000);
-  // Re-sync with the server periodically so multiple devices/tabs agree,
-  // even if this tab was never backgrounded.
-  setInterval(() => { refreshFromServer(); refreshHistory(); }, 30000);
+  async function boot() {
+    hideSignIn();
+    try {
+      const me = await apiFetch('/api/me').then((r) => r.json());
+      $headerUserName.textContent = me.name || me.email || '';
+    } catch (e) { /* header just stays blank */ }
 
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    updateNotifBanner();
+    refreshFromServer();
+    refreshHistory();
+    setInterval(tick, 1000);
+    // Re-sync with the server periodically so multiple devices/tabs agree,
+    // even if this tab was never backgrounded.
+    setInterval(() => { refreshFromServer(); refreshHistory(); }, 30000);
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      ensurePushSubscription();
+    }
   }
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    ensurePushSubscription();
+
+  if (getDevUser()) {
+    boot();
+  } else {
+    showSignIn();
   }
 })();
 </script>

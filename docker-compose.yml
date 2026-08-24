@@ -1,38 +1,43 @@
 services:
-  mongo:
-    image: mongo:7
-    container_name: bottlecaps-mongo
+  postgres:
+    image: postgres:16-alpine
+    container_name: bottlecaps-v2-postgres
     restart: unless-stopped
+    environment:
+      - POSTGRES_DB=bottlecaps
+      - POSTGRES_USER=bottlecaps
+      - POSTGRES_PASSWORD=bottlecaps_dev_only
     volumes:
-      - mongo_data:/data/db
-    # Not published to the host -- only the app container talks to it,
-    # over the compose network, by service name.
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    # Not published to the host -- only the app container talks to it.
 
   huckleberry:
     build: ./huckleberry
-    container_name: bottlecaps-huckleberry
+    container_name: bottlecaps-v2-huckleberry
     restart: unless-stopped
-    env_file:
-      - ./huckleberry.env
-    # Not published to the host -- only the app container talks to it.
+    # No huckleberry.env anymore -- credentials are per-user now, passed
+    # per-request from the app (see huckleberry/app.py).
 
   app:
     build: ./app
-    container_name: bottlecaps-app
+    container_name: bottlecaps-v2-app
     restart: unless-stopped
     depends_on:
-      - mongo
+      - postgres
       - huckleberry
     env_file:
       - ./app.env
     environment:
-      - MONGO_URL=mongodb://mongo:27017/bottlecaps
+      - DATABASE_URL=postgresql://bottlecaps:bottlecaps_dev_only@postgres:5432/bottlecaps
       - PORT=3000
       - BOTTLE_TIMER_MS=3600000
       - EXPIRY_POLL_MS=15000
       - HUCKLEBERRY_URL=http://huckleberry:8080
+      - DEV_MODE=true
     ports:
-      - "3000:3000"
+      # Offset from production's 3000 so both stacks run side by side on mini.
+      - "3001:3000"
 
 volumes:
-  mongo_data:
+  postgres_data:
