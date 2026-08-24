@@ -12,13 +12,9 @@ services:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     # Not published to the host -- only the app container talks to it.
 
-  huckleberry:
-    build: ./huckleberry
-    container_name: bottlecaps-v2-huckleberry
-    restart: unless-stopped
-    # No huckleberry.env anymore -- credentials are per-user now, passed
-    # per-request from the app (see huckleberry/app.py).
-
+  # Declared before huckleberry -- Dailey OS picks the first non-managed
+  # service in this file as the "primary" web process for the project's
+  # public URL/ingress, and app (not the huckleberry sidecar) needs to be it.
   app:
     build: ./app
     container_name: bottlecaps-v2-app
@@ -38,6 +34,13 @@ services:
     ports:
       # Offset from production's 3000 so both stacks run side by side on mini.
       - "3001:3000"
+
+  huckleberry:
+    build: ./huckleberry
+    container_name: bottlecaps-v2-huckleberry
+    restart: unless-stopped
+    # No huckleberry.env anymore -- credentials are per-user now, passed
+    # per-request from the app (see huckleberry/app.py).
 
 volumes:
   postgres_data:
