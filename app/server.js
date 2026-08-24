@@ -17,27 +17,27 @@ const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || '10', 10);
 const HUCKLEBERRY_URL = process.env.HUCKLEBERRY_URL || 'http://huckleberry:8080';
 const HUCKLEBERRY_MATCH_TOLERANCE_MS = 5000;
 
-// DEV ONLY: lets the app be exercised locally without a live Dailey Auth
-// registration (Dailey Auth is tied to a real deployed dailey.cloud
-// project -- see requireAuth's comment). Set DEV_MODE=true and send
-// `X-Dev-User: <any-string-id>` to act as that user; first use
-// auto-provisions the users row. MUST NOT be set true in any real
-// deployment -- it bypasses authentication entirely.
+// DEV ONLY: lets the app be exercised locally without live Google OAuth
+// credentials. Set DEV_MODE=true and send `X-Dev-User: <any-string-id>` to
+// act as that user; first use auto-provisions the users row. MUST NOT be
+// set true in any real deployment -- it bypasses authentication entirely.
 const DEV_MODE = process.env.DEV_MODE === 'true';
 
-// --- Dailey Auth (Dailey Core, OIDC) ----------------------------------------
-// Confirmed against Core's own discovery document
-// (https://core.dailey.cloud/.well-known/openid-configuration): standard
-// authorization_code + PKCE flow, RS256-signed JWTs verifiable via JWKS --
-// no shared-secret HMAC verification involved. client_secret is only used
-// server-side, once, to exchange the auth code for tokens.
-const CORE_ISSUER = 'https://core.dailey.cloud';
-const CORE_JWKS = createRemoteJWKSet(new URL(`${CORE_ISSUER}/.well-known/jwks.json`));
-const DAILEY_CLIENT_ID = process.env.DAILEY_CLIENT_ID || 'bottlecaps';
-const DAILEY_CLIENT_SECRET = process.env.DAILEY_AUTH_CLIENT_SECRET;
-// Must be the public HTTPS origin (matches what dailey_auth_enable reported
-// as this app's registered Origin) -- NOT the platform's internal APP_URL
-// env var, which points at the pod's cluster-internal address instead.
+// --- Google OAuth (OIDC) -----------------------------------------------
+// Standard authorization_code + PKCE flow, RS256-signed ID tokens
+// verifiable via Google's JWKS. Unlike a platform-scoped auth provider,
+// Google's JWKS is shared across every Google OAuth client that exists --
+// so `aud` MUST be checked against our own client_id, or any valid Google
+// ID token minted for a completely different app would verify as ours.
+const GOOGLE_ISSUER = 'https://accounts.google.com';
+const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
+const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+// Must be the public HTTPS origin -- has to exactly match an Authorized
+// redirect URI registered on the Google Cloud OAuth client, and Google
+// checks this byte-for-byte (no wildcard/prefix matching).
 const APP_ORIGIN = process.env.APP_ORIGIN || 'https://bottlecaps.dailey.cloud';
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
@@ -57,8 +57,8 @@ if (!CREDENTIALS_ENCRYPTION_KEY || Buffer.from(CREDENTIALS_ENCRYPTION_KEY, 'hex'
   console.error('[bottlecaps] CREDENTIALS_ENCRYPTION_KEY must be a 32-byte hex string (64 chars) -- generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
   process.exit(1);
 }
-if (!DEV_MODE && !DAILEY_CLIENT_SECRET) {
-  console.error('[bottlecaps] DAILEY_AUTH_CLIENT_SECRET is required when DEV_MODE is not true');
+if (!DEV_MODE && (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET)) {
+  console.error('[bottlecaps] GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are required when DEV_MODE is not true');
   process.exit(1);
 }
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
@@ -93,7 +93,7 @@ function decryptSecret(payload) {
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
 }
 
-// --- OAuth PKCE helpers (for the Dailey Auth login flow) --------------------
+// --- OAuth PKCE helpers (for the Google login flow) ---------------------
 
 function generatePkceVerifier() {
   return crypto.randomBytes(32).toString('base64url');
@@ -174,30 +174,51 @@ function rowToHistoryEntry(row) {
 
 // --- Auth --------------------------------------------------------------
 //
-// Dailey Auth ("Dailey Core") issues a JWT whose `tenant` claim identifies
-// the logged-in account; the app is expected to verify that JWT on each
-// request. The exact verification mechanism (JWKS endpoint vs. a shared
-// secret, where the token is delivered -- cookie vs. Authorization header)
-// isn't fully known yet since it's only observable once `dailey_auth_enable`
-// has actually been run against a real deployed project and we can see
-// Dailey Core's own docs/response shape for this app's client id.
-//
-async function verifyDaileyToken(token) {
-  const { payload } = await jwtVerify(token, CORE_JWKS, { issuer: CORE_ISSUER });
-  // dailey_auth_enable's own docs say this claim is named `tenant`; Core's
-  // OIDC discovery document instead lists `tid`/`tenant_slug` in its
-  // generic claims set. Rather than gamble on which one this app's tokens
-  // actually carry, accept whichever is present -- cheap to hedge, easy to
-  // get expensively wrong silently otherwise.
-  const tenant = payload.tenant || payload.tid || payload.tenant_slug;
-  if (!tenant) {
-    throw new Error('token has no tenant/tid/tenant_slug claim');
+// Google OAuth (OIDC). Users are identified by Google's `sub` claim --
+// stable per Google account, unlike email (which can change). Stored in
+// the `dailey_tenant` column (name is a holdover from an earlier Dailey
+// Auth attempt that hit an unresolved platform bug -- see git history --
+// not worth a migration just to rename an internal identifier column) as
+// `google:<sub>`, the same `<provider>:<id>` shape DEV_MODE already uses
+// for its `dev:<name>` users.
+async function verifyGoogleIdToken(token) {
+  const { payload } = await jwtVerify(token, GOOGLE_JWKS, {
+    issuer: GOOGLE_ISSUER,
+    audience: GOOGLE_CLIENT_ID,
+  });
+  if (!payload.sub) {
+    throw new Error('token has no sub claim');
   }
   return {
-    tenant: String(tenant),
+    tenant: `google:${payload.sub}`,
     email: payload.email || null,
     name: payload.name || payload.given_name || null,
   };
+}
+
+// Google's id_token is short-lived (~1hr), but the session cookie holding
+// it is long-lived -- without this, everyone gets silently signed out an
+// hour after login regardless of the cookie's own maxAge. Mints a fresh
+// id_token from the refresh_token captured at login (see /auth/callback).
+async function refreshGoogleIdToken(refreshToken) {
+  const res = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`refresh_token grant failed: ${res.status} ${await res.text()}`);
+  }
+  const tokens = await res.json();
+  if (!tokens.id_token) {
+    throw new Error('refresh_token grant returned no id_token');
+  }
+  return tokens.id_token;
 }
 
 async function getOrCreateUser(tenant, email, name) {
@@ -224,9 +245,24 @@ async function requireAuth(req, res, next) {
     // Falls back to the session cookie set by /auth/callback -- the
     // frontend doesn't handle tokens directly at all in the real (non-dev)
     // flow, it just relies on the browser sending this cookie.
-    const token = bearerToken || (req.cookies && req.cookies.dailey_session);
+    const token = bearerToken || (req.cookies && req.cookies.bottlecaps_session);
     if (!token) return res.status(401).json({ error: 'missing_token' });
-    const claims = await verifyDaileyToken(token);
+    let claims;
+    try {
+      claims = await verifyGoogleIdToken(token);
+    } catch (err) {
+      // The id_token itself expiring (~1hr) is the expected, common case --
+      // silently mint a fresh one from the refresh_token cookie rather than
+      // forcing a full re-login. Any other verification failure (bad
+      // signature, wrong audience, etc.) still falls through to the 401.
+      const encryptedRefresh = req.cookies && req.cookies.bottlecaps_refresh;
+      if (err.code !== 'ERR_JWT_EXPIRED' || !encryptedRefresh) throw err;
+      const newIdToken = await refreshGoogleIdToken(decryptSecret(encryptedRefresh));
+      claims = await verifyGoogleIdToken(newIdToken);
+      res.cookie('bottlecaps_session', newIdToken, {
+        httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000,
+      });
+    }
     req.user = await getOrCreateUser(claims.tenant, claims.email, claims.name);
     next();
   } catch (err) {
@@ -488,9 +524,8 @@ async function main() {
   app.get('/healthz', (req, res) => res.json({ ok: true }));
 
   // Public, unauthenticated -- lets the frontend decide at boot whether to
-  // show the dev sign-in screen (X-Dev-User) or the real "Sign in" button
-  // that redirects to Dailey Auth, without hardcoding that choice into the
-  // static HTML.
+  // show the dev sign-in screen (X-Dev-User) or the real "Sign in with
+  // Google" button, without hardcoding that choice into the static HTML.
   app.get('/api/config', (req, res) => {
     res.json({ devMode: DEV_MODE });
   });
@@ -500,39 +535,45 @@ async function main() {
       const state = crypto.randomBytes(16).toString('base64url');
       const codeVerifier = generatePkceVerifier();
       const cookieOpts = { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 5 * 60 * 1000 };
-      res.cookie('dailey_oauth_state', state, cookieOpts);
-      res.cookie('dailey_oauth_verifier', codeVerifier, cookieOpts);
+      res.cookie('google_oauth_state', state, cookieOpts);
+      res.cookie('google_oauth_verifier', codeVerifier, cookieOpts);
       const params = new URLSearchParams({
-        client_id: DAILEY_CLIENT_ID,
+        client_id: GOOGLE_CLIENT_ID,
         response_type: 'code',
         redirect_uri: `${APP_ORIGIN}/auth/callback`,
         scope: 'openid profile email',
         state,
         code_challenge: pkceChallengeFromVerifier(codeVerifier),
         code_challenge_method: 'S256',
+        // offline + consent so Google actually hands back a refresh_token
+        // every time (by default it only does this on the very first
+        // consent ever) -- needed to keep sessions alive past the
+        // id_token's own ~1hr expiry without forcing a re-login.
+        access_type: 'offline',
+        prompt: 'consent',
       });
-      res.redirect(`${CORE_ISSUER}/oauth/authorize?${params.toString()}`);
+      res.redirect(`${GOOGLE_AUTHORIZE_URL}?${params.toString()}`);
     });
 
     app.get('/auth/callback', async (req, res) => {
-      const expectedState = req.cookies.dailey_oauth_state;
-      const codeVerifier = req.cookies.dailey_oauth_verifier;
-      res.clearCookie('dailey_oauth_state');
-      res.clearCookie('dailey_oauth_verifier');
+      const expectedState = req.cookies.google_oauth_state;
+      const codeVerifier = req.cookies.google_oauth_verifier;
+      res.clearCookie('google_oauth_state');
+      res.clearCookie('google_oauth_verifier');
       try {
         const { code, state } = req.query;
         if (!code || !state || !expectedState || state !== expectedState || !codeVerifier) {
           return res.status(400).send('Sign-in link expired or invalid -- please try signing in again.');
         }
-        const tokenRes = await fetch(`${CORE_ISSUER}/oauth/token`, {
+        const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({
             grant_type: 'authorization_code',
             code: String(code),
             redirect_uri: `${APP_ORIGIN}/auth/callback`,
-            client_id: DAILEY_CLIENT_ID,
-            client_secret: DAILEY_CLIENT_SECRET,
+            client_id: GOOGLE_CLIENT_ID,
+            client_secret: GOOGLE_CLIENT_SECRET,
             code_verifier: codeVerifier,
           }),
         });
@@ -541,17 +582,36 @@ async function main() {
           return res.status(502).send('Sign-in failed -- could not exchange the login code. Please try again.');
         }
         const tokens = await tokenRes.json();
-        const sessionToken = tokens.id_token || tokens.access_token;
+        // Only id_token is a verifiable JWT with sub/email/name claims --
+        // access_token is opaque for Google, unlike some other providers.
+        const sessionToken = tokens.id_token;
+        if (!sessionToken) {
+          console.error('[auth] token response had no id_token', Object.keys(tokens));
+          return res.status(502).send('Sign-in failed -- no ID token returned. Please try again.');
+        }
         // Round-trip it through our own verifier before trusting it as a
-        // session -- if this throws, something's wrong with the token Core
-        // handed back and we shouldn't set a cookie for it.
-        await verifyDaileyToken(sessionToken);
-        res.cookie('dailey_session', sessionToken, {
+        // session -- if this throws, something's wrong with the token
+        // Google handed back and we shouldn't set a cookie for it.
+        await verifyGoogleIdToken(sessionToken);
+        res.cookie('bottlecaps_session', sessionToken, {
           httpOnly: true,
           secure: true,
           sameSite: 'lax',
           maxAge: 30 * 24 * 60 * 60 * 1000,
         });
+        if (tokens.refresh_token) {
+          res.cookie('bottlecaps_refresh', encryptSecret(tokens.refresh_token), {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'lax',
+            maxAge: 180 * 24 * 60 * 60 * 1000,
+          });
+        } else {
+          // Shouldn't happen given access_type=offline&prompt=consent above,
+          // but isn't fatal either -- this session just won't auto-refresh
+          // past its own id_token expiry, same as if this code didn't exist.
+          console.warn('[auth] no refresh_token in token response -- session will not auto-refresh');
+        }
         res.redirect('/');
       } catch (err) {
         console.error('[auth] callback error', err);
@@ -560,7 +620,8 @@ async function main() {
     });
 
     app.get('/auth/logout', (req, res) => {
-      res.clearCookie('dailey_session');
+      res.clearCookie('bottlecaps_session');
+      res.clearCookie('bottlecaps_refresh');
       res.redirect('/');
     });
   }
