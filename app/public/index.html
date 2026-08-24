@@ -406,7 +406,7 @@
     align-items: center;
     gap: 16px;
   }
-  #signin-google-link {
+  #signin-dailey-link {
     display: inline-block;
     background: var(--accent);
     color: white;
@@ -535,8 +535,8 @@
       <button id="signin-confirm">Continue</button>
     </div>
     <div id="signin-real" class="hidden">
-      <p>Sign in with your Google account to continue.</p>
-      <a id="signin-google-link" href="/auth/login">Sign in with Google</a>
+      <p>Sign in with your Dailey account to continue.</p>
+      <a id="signin-dailey-link" href="/auth/login">Sign in with Dailey</a>
     </div>
   </div>
 
@@ -697,7 +697,7 @@
   // Two modes, decided server-side (GET /api/config) and mirrored here:
   // - dev mode: localStorage-based X-Dev-User bypass, for local testing.
   // - real mode: cookie-based session set by server.js's /auth/callback
-  //   after the Google OAuth redirect. apiFetch() doesn't need to do
+  //   after the Dailey Auth OAuth redirect. apiFetch() doesn't need to do
   //   anything special for this -- same-origin fetch() sends cookies by
   //   default -- it only needs to keep working as the single seam every
   //   call site already goes through.
