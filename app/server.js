@@ -3,6 +3,8 @@
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
+const cookieParser = require('cookie-parser');
+const { createRemoteJWKSet, jwtVerify } = require('jose');
 const { Pool } = require('pg');
 const webpush = require('web-push');
 
@@ -23,6 +25,21 @@ const HUCKLEBERRY_MATCH_TOLERANCE_MS = 5000;
 // deployment -- it bypasses authentication entirely.
 const DEV_MODE = process.env.DEV_MODE === 'true';
 
+// --- Dailey Auth (Dailey Core, OIDC) ----------------------------------------
+// Confirmed against Core's own discovery document
+// (https://core.dailey.cloud/.well-known/openid-configuration): standard
+// authorization_code + PKCE flow, RS256-signed JWTs verifiable via JWKS --
+// no shared-secret HMAC verification involved. client_secret is only used
+// server-side, once, to exchange the auth code for tokens.
+const CORE_ISSUER = 'https://core.dailey.cloud';
+const CORE_JWKS = createRemoteJWKSet(new URL(`${CORE_ISSUER}/.well-known/jwks.json`));
+const DAILEY_CLIENT_ID = process.env.DAILEY_CLIENT_ID || 'bottlecaps';
+const DAILEY_CLIENT_SECRET = process.env.DAILEY_AUTH_CLIENT_SECRET;
+// Must be the public HTTPS origin (matches what dailey_auth_enable reported
+// as this app's registered Origin) -- NOT the platform's internal APP_URL
+// env var, which points at the pod's cluster-internal address instead.
+const APP_ORIGIN = process.env.APP_ORIGIN || 'https://bottlecaps.dailey.cloud';
+
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
@@ -38,6 +55,10 @@ if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
 }
 if (!CREDENTIALS_ENCRYPTION_KEY || Buffer.from(CREDENTIALS_ENCRYPTION_KEY, 'hex').length !== 32) {
   console.error('[bottlecaps] CREDENTIALS_ENCRYPTION_KEY must be a 32-byte hex string (64 chars) -- generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+  process.exit(1);
+}
+if (!DEV_MODE && !DAILEY_CLIENT_SECRET) {
+  console.error('[bottlecaps] DAILEY_AUTH_CLIENT_SECRET is required when DEV_MODE is not true');
   process.exit(1);
 }
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
@@ -70,6 +91,16 @@ function decryptSecret(payload) {
   const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+}
+
+// --- OAuth PKCE helpers (for the Dailey Auth login flow) --------------------
+
+function generatePkceVerifier() {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+function pkceChallengeFromVerifier(verifier) {
+  return crypto.createHash('sha256').update(verifier).digest('base64url');
 }
 
 // --- Formatting helpers (unchanged from the single-tenant version) ------
@@ -151,12 +182,22 @@ function rowToHistoryEntry(row) {
 // has actually been run against a real deployed project and we can see
 // Dailey Core's own docs/response shape for this app's client id.
 //
-// TODO(dailey-auth): replace verifyDaileyToken's body once the project is
-// registered with Dailey Auth for real. Everything downstream of it
-// (getOrCreateUser, req.user.id scoping on every route) is already correct
-// and shouldn't need to change.
 async function verifyDaileyToken(token) {
-  throw new Error('Dailey Auth verification not yet wired up -- see verifyDaileyToken TODO');
+  const { payload } = await jwtVerify(token, CORE_JWKS, { issuer: CORE_ISSUER });
+  // dailey_auth_enable's own docs say this claim is named `tenant`; Core's
+  // OIDC discovery document instead lists `tid`/`tenant_slug` in its
+  // generic claims set. Rather than gamble on which one this app's tokens
+  // actually carry, accept whichever is present -- cheap to hedge, easy to
+  // get expensively wrong silently otherwise.
+  const tenant = payload.tenant || payload.tid || payload.tenant_slug;
+  if (!tenant) {
+    throw new Error('token has no tenant/tid/tenant_slug claim');
+  }
+  return {
+    tenant: String(tenant),
+    email: payload.email || null,
+    name: payload.name || payload.given_name || null,
+  };
 }
 
 async function getOrCreateUser(tenant, email, name) {
@@ -179,7 +220,11 @@ async function requireAuth(req, res, next) {
       return next();
     }
     const auth = req.header('Authorization') || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    const bearerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    // Falls back to the session cookie set by /auth/callback -- the
+    // frontend doesn't handle tokens directly at all in the real (non-dev)
+    // flow, it just relies on the browser sending this cookie.
+    const token = bearerToken || (req.cookies && req.cookies.dailey_session);
     if (!token) return res.status(401).json({ error: 'missing_token' });
     const claims = await verifyDaileyToken(token);
     req.user = await getOrCreateUser(claims.tenant, claims.email, claims.name);
@@ -437,9 +482,88 @@ async function main() {
 
   const app = express();
   app.use(express.json());
+  app.use(cookieParser());
   app.use(express.static(path.join(__dirname, 'public')));
 
   app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+  // Public, unauthenticated -- lets the frontend decide at boot whether to
+  // show the dev sign-in screen (X-Dev-User) or the real "Sign in" button
+  // that redirects to Dailey Auth, without hardcoding that choice into the
+  // static HTML.
+  app.get('/api/config', (req, res) => {
+    res.json({ devMode: DEV_MODE });
+  });
+
+  if (!DEV_MODE) {
+    app.get('/auth/login', (req, res) => {
+      const state = crypto.randomBytes(16).toString('base64url');
+      const codeVerifier = generatePkceVerifier();
+      const cookieOpts = { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 5 * 60 * 1000 };
+      res.cookie('dailey_oauth_state', state, cookieOpts);
+      res.cookie('dailey_oauth_verifier', codeVerifier, cookieOpts);
+      const params = new URLSearchParams({
+        client_id: DAILEY_CLIENT_ID,
+        response_type: 'code',
+        redirect_uri: `${APP_ORIGIN}/auth/callback`,
+        scope: 'openid profile email',
+        state,
+        code_challenge: pkceChallengeFromVerifier(codeVerifier),
+        code_challenge_method: 'S256',
+      });
+      res.redirect(`${CORE_ISSUER}/oauth/authorize?${params.toString()}`);
+    });
+
+    app.get('/auth/callback', async (req, res) => {
+      const expectedState = req.cookies.dailey_oauth_state;
+      const codeVerifier = req.cookies.dailey_oauth_verifier;
+      res.clearCookie('dailey_oauth_state');
+      res.clearCookie('dailey_oauth_verifier');
+      try {
+        const { code, state } = req.query;
+        if (!code || !state || !expectedState || state !== expectedState || !codeVerifier) {
+          return res.status(400).send('Sign-in link expired or invalid -- please try signing in again.');
+        }
+        const tokenRes = await fetch(`${CORE_ISSUER}/oauth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code: String(code),
+            redirect_uri: `${APP_ORIGIN}/auth/callback`,
+            client_id: DAILEY_CLIENT_ID,
+            client_secret: DAILEY_CLIENT_SECRET,
+            code_verifier: codeVerifier,
+          }),
+        });
+        if (!tokenRes.ok) {
+          console.error('[auth] token exchange failed', tokenRes.status, await tokenRes.text());
+          return res.status(502).send('Sign-in failed -- could not exchange the login code. Please try again.');
+        }
+        const tokens = await tokenRes.json();
+        const sessionToken = tokens.id_token || tokens.access_token;
+        // Round-trip it through our own verifier before trusting it as a
+        // session -- if this throws, something's wrong with the token Core
+        // handed back and we shouldn't set a cookie for it.
+        await verifyDaileyToken(sessionToken);
+        res.cookie('dailey_session', sessionToken, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'lax',
+          maxAge: 30 * 24 * 60 * 60 * 1000,
+        });
+        res.redirect('/');
+      } catch (err) {
+        console.error('[auth] callback error', err);
+        res.status(500).send('Sign-in failed. Please try again.');
+      }
+    });
+
+    app.get('/auth/logout', (req, res) => {
+      res.clearCookie('dailey_session');
+      res.redirect('/');
+    });
+  }
 
   // Widget text is deliberately NOT behind requireAuth -- the whole point
   // is a single no-JS "Get Contents of URL" Shortcuts action, which can't

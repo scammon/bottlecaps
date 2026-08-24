@@ -400,6 +400,22 @@
     font-weight: 600;
     cursor: pointer;
   }
+  #signin-dev, #signin-real {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  #signin-dailey-link {
+    display: inline-block;
+    background: var(--accent);
+    color: white;
+    text-decoration: none;
+    border-radius: 10px;
+    padding: 12px 32px;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
 
   /* --- Header bar (user + settings + sign out) --- */
   #header-bar {
@@ -511,11 +527,17 @@
 </head>
 <body>
   <div id="signin-screen">
-    <span class="dev-badge">Dev sign-in</span>
     <h1>bottlecaps</h1>
-    <p>Real sign-in (Dailey Auth) isn't wired up yet -- enter any name to act as that user for local testing. Different names get completely separate data.</p>
-    <input id="signin-input" type="text" placeholder="e.g. alice" autocapitalize="off" autocorrect="off">
-    <button id="signin-confirm">Continue</button>
+    <div id="signin-dev">
+      <span class="dev-badge">Dev sign-in</span>
+      <p>Enter any name to act as that user for local testing. Different names get completely separate data.</p>
+      <input id="signin-input" type="text" placeholder="e.g. alice" autocapitalize="off" autocorrect="off">
+      <button id="signin-confirm">Continue</button>
+    </div>
+    <div id="signin-real" class="hidden">
+      <p>Sign in with your Dailey account to continue.</p>
+      <a id="signin-dailey-link" href="/auth/login">Sign in with Dailey</a>
+    </div>
   </div>
 
   <div class="hero">
@@ -648,6 +670,8 @@
   const $deleteKeep = document.getElementById('delete-keep');
   const $deleteConfirm = document.getElementById('delete-confirm');
   const $signinScreen = document.getElementById('signin-screen');
+  const $signinDev = document.getElementById('signin-dev');
+  const $signinReal = document.getElementById('signin-real');
   const $signinInput = document.getElementById('signin-input');
   const $signinConfirm = document.getElementById('signin-confirm');
   const $headerUserName = document.getElementById('header-user-name');
@@ -670,13 +694,14 @@
   let loggedAtMs = null;
 
   // --- Auth ------------------------------------------------------------
-  // DEV MODE ONLY. Dailey Auth isn't wired up server-side yet -- see
-  // server.js's verifyDaileyToken TODO. Once it is, this whole block gets
-  // replaced with real bearer-token handling (obtain a token from Dailey's
-  // login flow, store it, send it as `Authorization: Bearer <token>`
-  // instead of X-Dev-User). apiFetch() is the seam: every call site below
-  // already goes through it, so nothing else in this file should need to
-  // change when that swap happens.
+  // Two modes, decided server-side (GET /api/config) and mirrored here:
+  // - dev mode: localStorage-based X-Dev-User bypass, for local testing.
+  // - real mode: cookie-based session set by server.js's /auth/callback
+  //   after the Dailey Auth OAuth redirect. apiFetch() doesn't need to do
+  //   anything special for this -- same-origin fetch() sends cookies by
+  //   default -- it only needs to keep working as the single seam every
+  //   call site already goes through.
+  let clientDevMode = true; // safe default until /api/config resolves
   const DEV_USER_KEY = 'bottlecaps_dev_user';
 
   function getDevUser() { return localStorage.getItem(DEV_USER_KEY); }
@@ -706,6 +731,11 @@
   function hideSignIn() {
     $signinScreen.classList.add('hidden');
   }
+  function applyAuthMode(devMode) {
+    clientDevMode = devMode;
+    $signinDev.classList.toggle('hidden', !devMode);
+    $signinReal.classList.toggle('hidden', devMode);
+  }
 
   $signinConfirm.addEventListener('click', () => {
     const name = $signinInput.value.trim();
@@ -721,8 +751,12 @@
   });
 
   $signOut.addEventListener('click', () => {
-    clearDevUser();
-    location.reload();
+    if (clientDevMode) {
+      clearDevUser();
+      location.reload();
+    } else {
+      location.href = '/auth/logout';
+    }
   });
 
   function fmt(ms) {
@@ -1373,11 +1407,29 @@
     }
   }
 
-  if (getDevUser()) {
-    boot();
-  } else {
-    showSignIn();
+  async function init() {
+    let cfg = { devMode: true }; // fail safe toward the dev screen, never toward silently trusting a stale cookie
+    try {
+      cfg = await fetch('/api/config').then((r) => r.json());
+    } catch (e) { /* keep the fail-safe default */ }
+    applyAuthMode(cfg.devMode);
+
+    if (cfg.devMode) {
+      if (getDevUser()) { boot(); } else { showSignIn(); }
+      return;
+    }
+
+    // Real mode: no client-side flag to check -- the session lives in an
+    // httpOnly cookie we can't read from JS. Try an authenticated call;
+    // apiFetch's own 401 handler calls showSignIn() for us if it fails.
+    try {
+      const res = await apiFetch('/api/me');
+      if (res.ok) { boot(); } else { showSignIn(); }
+    } catch (e) {
+      showSignIn();
+    }
   }
+  init();
 })();
 </script>
 </body>
