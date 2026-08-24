@@ -1,0 +1,38 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: bottlecaps-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    # Not published to the host -- only the app container talks to it,
+    # over the compose network, by service name.
+
+  huckleberry:
+    build: ./huckleberry
+    container_name: bottlecaps-huckleberry
+    restart: unless-stopped
+    env_file:
+      - ./huckleberry.env
+    # Not published to the host -- only the app container talks to it.
+
+  app:
+    build: ./app
+    container_name: bottlecaps-app
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - huckleberry
+    env_file:
+      - ./app.env
+    environment:
+      - MONGO_URL=mongodb://mongo:27017/bottlecaps
+      - PORT=3000
+      - BOTTLE_TIMER_MS=3600000
+      - EXPIRY_POLL_MS=15000
+      - HUCKLEBERRY_URL=http://huckleberry:8080
+    ports:
+      - "3000:3000"
+
+volumes:
+  mongo_data:

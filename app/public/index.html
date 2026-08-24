@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bottlecaps</title>
+
+<!-- iOS "Add to Home Screen" support -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="bottlecaps">
+<meta name="theme-color" content="#12141a">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍾</text></svg>">
+
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #12141a;
+    --panel: #1b1e27;
+    --accent: #4f8cff;
+    --accent-press: #3a6fd6;
+    --text: #f0f2f7;
+    --muted: #8a90a2;
+    --danger: #ff5f6d;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    background: radial-gradient(circle at top, #1b1e27, var(--bg) 60%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  /* Everything above the fold -- centered in the first screen, exactly like
+     before. The history section below is normal flow, so it only comes
+     into view on scroll rather than squeezing into (or being centered
+     within) that first screen. */
+  .hero {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+    padding: calc(env(safe-area-inset-top) + 24px) 20px 24px;
+    gap: 28px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  #button {
+    width: min(60vw, 260px);
+    height: min(60vw, 260px);
+    border-radius: 50%;
+    border: none;
+    background: linear-gradient(145deg, var(--accent), var(--accent-press));
+    color: white;
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 12px 30px rgba(79, 140, 255, 0.35), inset 0 -6px 12px rgba(0,0,0,0.2);
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  #button:active {
+    transform: scale(0.96);
+    box-shadow: 0 6px 16px rgba(79, 140, 255, 0.3), inset 0 -6px 12px rgba(0,0,0,0.25);
+  }
+  #button.expired {
+    background: linear-gradient(145deg, var(--danger), #c93f4b);
+    box-shadow: 0 12px 30px rgba(255, 95, 109, 0.35), inset 0 -6px 12px rgba(0,0,0,0.2);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.04); }
+  }
+  #timer {
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(2.4rem, 10vw, 3.6rem);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  #timer.expired { color: var(--danger); }
+  #sub {
+    color: var(--muted);
+    font-size: 0.95rem;
+    text-align: center;
+    min-height: 1.2em;
+  }
+  #started-at {
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-align: center;
+    min-height: 1.1em;
+  }
+  #stats {
+    color: var(--muted);
+    font-size: 0.8rem;
+    letter-spacing: 0.04em;
+  }
+  #notif-banner {
+    display: none;
+    background: var(--panel);
+    border: 1px solid #2b2f3d;
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 0.85rem;
+    color: var(--muted);
+    text-align: center;
+    max-width: 320px;
+  }
+  #history {
+    width: 100%;
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 0 20px calc(env(safe-area-inset-bottom) + 40px);
+  }
+  #history h2 {
+    margin: 0 0 4px;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    text-align: center;
+  }
+  #avg-gap {
+    text-align: center;
+    font-size: 1.4rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 18px;
+  }
+  #avg-gap .label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    text-transform: none;
+    margin-top: 2px;
+  }
+  #history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  #history-table th {
+    text-align: left;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 0 0 8px;
+    border-bottom: 1px solid #2b2f3d;
+  }
+  #history-table th:last-child, #history-table td:last-child { text-align: right; }
+  #history-table td {
+    padding: 10px 0;
+    border-bottom: 1px solid #20232d;
+    font-variant-numeric: tabular-nums;
+  }
+  #history-table td.empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 20px 0;
+  }
+  #history-table td.gap { color: var(--muted); }
+
+  #settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  #settings-row label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  #settings-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+  }
+  #settings-row select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid #2b2f3d;
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 0.85rem;
+  }
+  #cancel-button {
+    background: none;
+    border: 1px solid #3a2b2f;
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 6px 16px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  #cancel-button:active { background: #201519; }
+  #cancel-button.hidden, #settings-row.hidden { display: none; }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 10;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid #2b2f3d;
+    border-radius: 16px;
+    padding: 24px;
+    max-width: 320px;
+    width: 100%;
+    text-align: center;
+  }
+  .modal p {
+    margin: 0 0 20px;
+    font-size: 1rem;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+  .modal-actions button {
+    flex: 1;
+    padding: 10px 0;
+    border-radius: 10px;
+    border: none;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #modal-keep {
+    background: #2b2f3d;
+    color: var(--text);
+  }
+  #modal-discard {
+    background: var(--danger);
+    color: white;
+  }
+</style>
+</head>
+<body>
+  <div class="hero">
+    <h1>bottlecaps</h1>
+    <div id="timer">--:--:--</div>
+    <button id="button">Log a bottle</button>
+    <div id="sub"></div>
+    <div id="started-at"></div>
+    <button id="cancel-button" class="hidden">Cancel this bottle</button>
+    <div id="settings-row">
+      <label><input type="checkbox" id="hb-enabled"> Log to Huckleberry</label>
+      <label>Ounces
+        <select id="ounces">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+        </select>
+      </label>
+    </div>
+    <div id="notif-banner">Notifications are blocked. Enable them for this site to get an alert when the timer runs out.</div>
+    <div id="stats"></div>
+  </div>
+
+  <div id="cancel-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <p>Discard this bottle log?</p>
+      <div class="modal-actions">
+        <button id="modal-keep">Keep it</button>
+        <button id="modal-discard">Discard</button>
+      </div>
+    </div>
+  </div>
+
+  <section id="history">
+    <div id="avg-gap">--<span class="label">average time between bottles</span></div>
+    <h2>Recent bottles</h2>
+    <table id="history-table">
+      <thead><tr><th>Started</th><th>Gap</th></tr></thead>
+      <tbody id="history-body"></tbody>
+    </table>
+  </section>
+
+<script>
+(function () {
+  const $timer = document.getElementById('timer');
+  const $button = document.getElementById('button');
+  const $sub = document.getElementById('sub');
+  const $startedAt = document.getElementById('started-at');
+  const $stats = document.getElementById('stats');
+  const $notifBanner = document.getElementById('notif-banner');
+  const $avgGap = document.getElementById('avg-gap');
+  const $historyBody = document.getElementById('history-body');
+  const $cancelButton = document.getElementById('cancel-button');
+  const $hbEnabled = document.getElementById('hb-enabled');
+  const $ounces = document.getElementById('ounces');
+  const $cancelModal = document.getElementById('cancel-modal');
+  const $modalKeep = document.getElementById('modal-keep');
+  const $modalDiscard = document.getElementById('modal-discard');
+
+  let expiresAtMs = null;
+  let loggedAtMs = null;
+
+  function fmt(ms) {
+    if (ms <= 0) return "00:00:00";
+    const totalSec = Math.ceil(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return [h, m, s].map((n) => String(n).padStart(2, '0')).join(':');
+  }
+
+  // Compact "3h 12m", "12m", "45s" -- used for "<duration> ago".
+  function fmtCompact(ms) {
+    const totalSec = Math.max(0, Math.floor(ms / 1000));
+    const d = Math.floor(totalSec / 86400);
+    const h = Math.floor((totalSec % 86400) / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function renderStartedAt() {
+    if (loggedAtMs === null) {
+      $startedAt.textContent = '';
+      return;
+    }
+    const time = new Date(loggedAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    $startedAt.textContent = `bottle started at ${time}, ${fmtCompact(Date.now() - loggedAtMs)} ago`;
+  }
+
+  // Actual delivery of the "time's up" alert is entirely server-driven (the
+  // server watches Mongo and sends a Web Push through the service worker),
+  // so it fires even if this page isn't open. This function only updates
+  // what's on screen right now.
+  function render(remainingMs) {
+    const expired = remainingMs <= 0;
+    $timer.textContent = fmt(remainingMs);
+    $timer.classList.toggle('expired', expired);
+    $button.classList.toggle('expired', expired);
+    $sub.textContent = expired
+      ? "Timer's up — press the button to start a new one."
+      : 'Timer running — press again anytime to reset it.';
+    // Only an active (still-counting-down) bottle can be cancelled --
+    // once expired it's history, and may already be mid-flight to
+    // Huckleberry/push.
+    $cancelButton.classList.toggle('hidden', expired || loggedAtMs === null);
+  }
+
+  function tick() {
+    renderStartedAt();
+    if (expiresAtMs === null) return;
+    render(expiresAtMs - Date.now());
+  }
+
+  function applyStatus(status) {
+    expiresAtMs = status.expiresAt ? new Date(status.expiresAt).getTime() : null;
+    loggedAtMs = status.loggedAt ? new Date(status.loggedAt).getTime() : null;
+    $stats.textContent = status.totalBottles === 1
+      ? '1 bottle logged all-time'
+      : `${status.totalBottles} bottles logged all-time`;
+    renderStartedAt();
+    if (expiresAtMs === null) {
+      render(0);
+    } else {
+      tick();
+    }
+  }
+
+  async function fetchStatus() {
+    const res = await fetch('/api/status');
+    if (!res.ok) throw new Error('status fetch failed');
+    return res.json();
+  }
+
+  async function logBottle() {
+    const res = await fetch('/api/bottle', { method: 'POST' });
+    if (!res.ok) throw new Error('log failed');
+    return res.json();
+  }
+
+  // --- History table --------------------------------------------------
+
+  function fmtHistoryTime(iso) {
+    const d = new Date(iso);
+    const today = new Date();
+    const isToday = d.toDateString() === today.toDateString();
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (isToday) return time;
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+  }
+
+  async function fetchHistory() {
+    const res = await fetch('/api/history');
+    if (!res.ok) throw new Error('history fetch failed');
+    return res.json();
+  }
+
+  function renderHistory({ rows, avgGapMs }) {
+    $avgGap.innerHTML = (avgGapMs === null ? '—' : fmtCompact(avgGapMs))
+      + '<span class="label">average time between bottles</span>';
+
+    $historyBody.innerHTML = '';
+    if (rows.length === 0) {
+      $historyBody.innerHTML = '<tr><td class="empty" colspan="2">No bottles logged yet</td></tr>';
+      return;
+    }
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      const tdTime = document.createElement('td');
+      tdTime.textContent = fmtHistoryTime(row.loggedAt);
+      const tdGap = document.createElement('td');
+      tdGap.className = 'gap';
+      tdGap.textContent = row.gapMs === null ? '—' : fmtCompact(row.gapMs);
+      tr.appendChild(tdTime);
+      tr.appendChild(tdGap);
+      $historyBody.appendChild(tr);
+    }
+  }
+
+  async function refreshHistory() {
+    try {
+      renderHistory(await fetchHistory());
+    } catch (e) {
+      // Leave whatever was last rendered rather than blanking the table.
+    }
+  }
+
+  // --- Settings (huckleberry logging + ounces) ------------------------
+
+  async function loadSettings() {
+    try {
+      const settings = await fetch('/api/settings').then((r) => r.json());
+      $hbEnabled.checked = settings.huckleberryEnabled;
+      $ounces.value = String(settings.ounces);
+    } catch (e) {
+      // Leave the checkbox/select at their HTML defaults (checked, "3").
+    }
+  }
+
+  async function saveSetting(partial) {
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(partial),
+      });
+    } catch (e) {
+      console.error('failed to save setting', e);
+    }
+  }
+
+  $hbEnabled.addEventListener('change', () => {
+    saveSetting({ huckleberryEnabled: $hbEnabled.checked });
+  });
+  $ounces.addEventListener('change', () => {
+    saveSetting({ ounces: parseInt($ounces.value, 10) });
+  });
+
+  // --- Cancel (discard active bottle) ----------------------------------
+
+  $cancelButton.addEventListener('click', () => {
+    $cancelModal.classList.remove('hidden');
+  });
+  $modalKeep.addEventListener('click', () => {
+    $cancelModal.classList.add('hidden');
+  });
+  $cancelModal.addEventListener('click', (e) => {
+    if (e.target === $cancelModal) $cancelModal.classList.add('hidden');
+  });
+  $modalDiscard.addEventListener('click', async () => {
+    $modalDiscard.disabled = true;
+    try {
+      const status = await fetch('/api/bottle/cancel', { method: 'POST' }).then((r) => r.json());
+      applyStatus(status);
+      refreshHistory();
+    } catch (e) {
+      $sub.textContent = 'Could not cancel — check the server.';
+    } finally {
+      $modalDiscard.disabled = false;
+      $cancelModal.classList.add('hidden');
+    }
+  });
+
+  function updateNotifBanner() {
+    const supported = 'Notification' in window;
+    $notifBanner.style.display = supported && Notification.permission === 'denied' ? 'block' : 'none';
+  }
+
+  // --- Push subscription plumbing -----------------------------------
+  // On iOS this only works once the page has been added to the Home
+  // Screen (Share -> Add to Home Screen) and opened from there; a plain
+  // Safari tab can request permission but the OS won't deliver push to it.
+
+  function urlBase64ToUint8Array(base64url) {
+    const padding = '='.repeat((4 - (base64url.length % 4)) % 4);
+    const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+  }
+
+  async function ensurePushSubscription() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const { publicKey } = await fetch('/api/vapid-public-key').then((r) => r.json());
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+      }
+      await fetch('/api/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sub),
+      });
+    } catch (e) {
+      console.error('push subscription failed', e);
+    }
+  }
+
+  $button.addEventListener('click', async () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch (e) { /* ignore */ }
+      updateNotifBanner();
+      await ensurePushSubscription();
+    }
+    $button.disabled = true;
+    try {
+      const status = await logBottle();
+      applyStatus(status);
+      refreshHistory();
+    } catch (e) {
+      $sub.textContent = 'Could not log — check the server.';
+    } finally {
+      $button.disabled = false;
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      refreshFromServer();
+      refreshHistory();
+    }
+  });
+
+  async function refreshFromServer() {
+    try {
+      applyStatus(await fetchStatus());
+    } catch (e) {
+      $sub.textContent = 'Could not reach the server.';
+    }
+  }
+
+  updateNotifBanner();
+  refreshFromServer();
+  refreshHistory();
+  setInterval(tick, 1000);
+  // Re-sync with the server periodically so multiple devices/tabs agree,
+  // even if this tab was never backgrounded.
+  setInterval(() => { refreshFromServer(); refreshHistory(); }, 30000);
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    ensurePushSubscription();
+  }
+})();
+</script>
+</body>
+</html>

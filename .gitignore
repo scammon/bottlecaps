@@ -1,0 +1,4 @@
+# Secrets -- VAPID keys, Huckleberry account credentials. Never commit these.
+*.env
+
+node_modules/
