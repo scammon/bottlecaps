@@ -282,6 +282,13 @@ async def handle_list_bottles(request: web.Request) -> web.Response:
 
 def make_app() -> web.Application:
     app = web.Application()
+    # Dailey OS's canary/readiness probe hits "/" by default (no per-service
+    # healthcheck path in the compose manifest) -- confirmed via kube-probe
+    # 404s in this pod's own logs once it became a secondary service. "/health"
+    # covers the other common convention. /healthz stays for anything already
+    # relying on it (e.g. the local docker-compose stack).
+    app.router.add_get("/", handle_healthz)
+    app.router.add_get("/health", handle_healthz)
     app.router.add_get("/healthz", handle_healthz)
     app.router.add_post("/whoami", handle_whoami)
     app.router.add_post("/log-bottle", handle_log_bottle)
