@@ -16,12 +16,6 @@ const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || '10', 10);
 const HUCKLEBERRY_URL = process.env.HUCKLEBERRY_URL || 'http://huckleberry:8080';
 const HUCKLEBERRY_MATCH_TOLERANCE_MS = 5000;
 
-// DEV ONLY: lets the app be exercised locally without live Dailey Core
-// credentials. Set DEV_MODE=true and send `X-Dev-User: <any-string-id>` to
-// act as that user; first use auto-provisions the users row. MUST NOT be
-// set true in any real deployment -- it bypasses authentication entirely.
-const DEV_MODE = process.env.DEV_MODE === 'true';
-
 // --- Dailey Core (app-scoped identity API) ------------------------------
 // Not the OAuth-redirect flow from the first attempt (Core's own /oauth/*
 // SSO endpoints turned out to route through the platform's own account
@@ -61,14 +55,11 @@ if (!CREDENTIALS_ENCRYPTION_KEY || Buffer.from(CREDENTIALS_ENCRYPTION_KEY, 'hex'
   console.error('[bottlecaps] CREDENTIALS_ENCRYPTION_KEY must be a 32-byte hex string (64 chars) -- generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
   process.exit(1);
 }
-if (!DEV_MODE && !DAILEY_APP_ID) {
-  console.error('[bottlecaps] DAILEY_APP_ID is required when DEV_MODE is not true');
+if (!DAILEY_APP_ID) {
+  console.error('[bottlecaps] DAILEY_APP_ID is required');
   process.exit(1);
 }
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-if (DEV_MODE) {
-  console.warn('[bottlecaps] DEV_MODE=true -- authentication is BYPASSED. Never set this in a real deployment.');
-}
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -201,12 +192,6 @@ async function getOrCreateUser(tenant, email, name) {
 
 async function requireAuth(req, res, next) {
   try {
-    if (DEV_MODE) {
-      const devUser = req.header('X-Dev-User');
-      if (!devUser) return res.status(401).json({ error: 'missing_x_dev_user_header' });
-      req.user = await getOrCreateUser(`dev:${devUser}`, null, devUser);
-      return next();
-    }
     const auth = req.header('Authorization') || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'missing_token' });
@@ -469,14 +454,6 @@ async function main() {
   app.use(express.static(path.join(__dirname, 'public')));
 
   app.get('/healthz', (req, res) => res.json({ ok: true }));
-
-  // Public, unauthenticated -- lets the frontend decide at boot whether to
-  // show the dev sign-in screen (X-Dev-User) or the real sign-in/signup
-  // form, without hardcoding that choice into the static HTML. No auth
-  // routes to register here anymore -- the frontend talks to Core directly.
-  app.get('/api/config', (req, res) => {
-    res.json({ devMode: DEV_MODE });
-  });
 
   // Widget text is deliberately NOT behind requireAuth -- the whole point
   // is a single no-JS "Get Contents of URL" Shortcuts action, which can't

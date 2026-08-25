@@ -30,7 +30,7 @@ services:
       - BOTTLE_TIMER_MS=3600000
       - EXPIRY_POLL_MS=15000
       - HUCKLEBERRY_URL=http://huckleberry:8080
-      - DEV_MODE=true
+      - DAILEY_APP_ID=f726ab8a-035b-4655-985e-3522a3ff5bea
     ports:
       # Offset from production's 3000 so both stacks run side by side on mini.
       - "3001:3000"

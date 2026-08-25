@@ -362,16 +362,6 @@
     z-index: 20;
   }
   #signin-screen.hidden { display: none; }
-  #signin-screen .dev-badge {
-    color: var(--danger);
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-weight: 700;
-    border: 1px solid var(--danger);
-    border-radius: 999px;
-    padding: 4px 12px;
-  }
   #signin-screen p {
     color: var(--muted);
     font-size: 0.85rem;
@@ -379,7 +369,7 @@
     max-width: 280px;
     margin: 0;
   }
-  #signin-input, .signin-field {
+  .signin-field {
     width: 100%;
     max-width: 260px;
     background: var(--panel);
@@ -390,7 +380,7 @@
     font-size: 1rem;
     text-align: center;
   }
-  #signin-confirm, .signin-btn {
+  .signin-btn {
     background: var(--accent);
     color: white;
     border: none;
@@ -401,7 +391,7 @@
     cursor: pointer;
   }
   .signin-btn:disabled { opacity: 0.6; cursor: default; }
-  #signin-dev, #signin-real {
+  #signin-real {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -534,13 +524,7 @@
 <body>
   <div id="signin-screen">
     <h1>bottlecaps</h1>
-    <div id="signin-dev">
-      <span class="dev-badge">Dev sign-in</span>
-      <p>Enter any name to act as that user for local testing. Different names get completely separate data.</p>
-      <input id="signin-input" type="text" placeholder="e.g. alice" autocapitalize="off" autocorrect="off">
-      <button id="signin-confirm">Continue</button>
-    </div>
-    <div id="signin-real" class="hidden">
+    <div id="signin-real">
       <p id="signin-real-heading">Sign in to continue.</p>
       <input id="signin-name" class="signin-field hidden" type="text" placeholder="Name" autocapitalize="words">
       <input id="signin-email" class="signin-field" type="email" placeholder="Email" autocapitalize="off" autocorrect="off" autocomplete="email">
@@ -681,10 +665,6 @@
   const $deleteKeep = document.getElementById('delete-keep');
   const $deleteConfirm = document.getElementById('delete-confirm');
   const $signinScreen = document.getElementById('signin-screen');
-  const $signinDev = document.getElementById('signin-dev');
-  const $signinReal = document.getElementById('signin-real');
-  const $signinInput = document.getElementById('signin-input');
-  const $signinConfirm = document.getElementById('signin-confirm');
   const $signinRealHeading = document.getElementById('signin-real-heading');
   const $signinName = document.getElementById('signin-name');
   const $signinEmail = document.getElementById('signin-email');
@@ -712,22 +692,11 @@
   let loggedAtMs = null;
 
   // --- Auth ------------------------------------------------------------
-  // Two modes, decided server-side (GET /api/config) and mirrored here:
-  // - dev mode: localStorage-based X-Dev-User bypass, for local testing.
-  // - real mode: this app talks to Dailey Core directly (browser ->
-  //   core.dailey.cloud, CORS opened for this app's origin) for
-  //   signup/login/refresh, and holds the resulting access/refresh tokens
-  //   in localStorage. server.js never sees a password and never calls
-  //   Core itself -- it only verifies the Bearer token this file attaches
-  //   to every apiFetch() call.
-  let clientDevMode = true; // safe default until /api/config resolves
-  const DEV_USER_KEY = 'bottlecaps_dev_user';
-
-  function getDevUser() { return localStorage.getItem(DEV_USER_KEY); }
-  function setDevUser(name) { localStorage.setItem(DEV_USER_KEY, name); }
-  function clearDevUser() { localStorage.removeItem(DEV_USER_KEY); }
-
-  // --- Dailey Core (real mode only) ---
+  // This app talks to Dailey Core directly (browser -> core.dailey.cloud,
+  // CORS opened for this app's origin) for signup/login/refresh, and holds
+  // the resulting access/refresh tokens in localStorage. server.js never
+  // sees a password and never calls Core itself -- it only verifies the
+  // Bearer token this file attaches to every apiFetch() call.
   const CORE_BASE = 'https://core.dailey.cloud';
   const DAILEY_CLIENT_ID = 'bottlecaps'; // public, not a secret -- same value the backend's DAILEY_APP_ID maps to
   const ACCESS_TOKEN_KEY = 'bottlecaps_access_token';
@@ -773,10 +742,6 @@
   }
 
   async function authHeaders() {
-    if (clientDevMode) {
-      const devUser = getDevUser();
-      return devUser ? { 'X-Dev-User': devUser } : {};
-    }
     let token = getAccessToken();
     if (!token) return {};
     // Proactively refresh if the token is at or past expiry (or within 30s
@@ -799,22 +764,18 @@
       headers: { ...(options.headers || {}), ...(await authHeaders()) },
     });
     if (res.status === 401) {
-      if (clientDevMode) {
-        clearDevUser();
-      } else {
-        // Covers the case the proactive check in authHeaders() missed
-        // (clock skew, a token revoked server-side, etc.) -- try one
-        // refresh-and-retry before giving up and asking for a real login.
-        try {
-          const newToken = await refreshAccessToken();
-          const retry = await fetch(url, {
-            ...options,
-            headers: { ...(options.headers || {}), Authorization: `Bearer ${newToken}` },
-          });
-          if (retry.status !== 401) return retry;
-        } catch (e) { /* fall through to sign-in */ }
-        clearTokens();
-      }
+      // Covers the case the proactive check in authHeaders() missed (clock
+      // skew, a token revoked server-side, etc.) -- try one refresh-and-
+      // retry before giving up and asking for a real login.
+      try {
+        const newToken = await refreshAccessToken();
+        const retry = await fetch(url, {
+          ...options,
+          headers: { ...(options.headers || {}), Authorization: `Bearer ${newToken}` },
+        });
+        if (retry.status !== 401) return retry;
+      } catch (e) { /* fall through to sign-in */ }
+      clearTokens();
       showSignIn();
     }
     return res;
@@ -826,24 +787,6 @@
   function hideSignIn() {
     $signinScreen.classList.add('hidden');
   }
-  function applyAuthMode(devMode) {
-    clientDevMode = devMode;
-    $signinDev.classList.toggle('hidden', !devMode);
-    $signinReal.classList.toggle('hidden', devMode);
-  }
-
-  $signinConfirm.addEventListener('click', () => {
-    const name = $signinInput.value.trim();
-    if (!name) return;
-    setDevUser(name);
-    // Reload rather than calling boot() in place -- simpler than tracking
-    // and tearing down setInterval timers/module state for a sign-out ->
-    // sign-in-as-someone-else cycle within the same page load.
-    location.reload();
-  });
-  $signinInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') $signinConfirm.click();
-  });
 
   // --- Real sign-in form (email/password, toggles between sign-in and
   // create-account) ---
@@ -911,14 +854,10 @@
   }
 
   $signOut.addEventListener('click', () => {
-    if (clientDevMode) {
-      clearDevUser();
-    } else {
-      // No server-side session to invalidate -- Core has no logout
-      // endpoint in this API surface, tokens just expire naturally.
-      // Clearing them locally is the whole of "signing out" here.
-      clearTokens();
-    }
+    // No server-side session to invalidate -- Core has no logout endpoint
+    // in this API surface, tokens just expire naturally. Clearing them
+    // locally is the whole of "signing out" here.
+    clearTokens();
     location.reload();
   });
 
@@ -1571,22 +1510,11 @@
   }
 
   async function init() {
-    let cfg = { devMode: true }; // fail safe toward the dev screen, never toward silently trusting a stale token
-    try {
-      cfg = await fetch('/api/config').then((r) => r.json());
-    } catch (e) { /* keep the fail-safe default */ }
-    applyAuthMode(cfg.devMode);
-
-    if (cfg.devMode) {
-      if (getDevUser()) { boot(); } else { showSignIn(); }
-      return;
-    }
-
-    // Real mode: no stored access token at all means we've never been
-    // signed in on this device/browser -- skip straight to the sign-in
-    // form instead of a doomed apiFetch call. If a token IS present,
-    // confirm it (or its refresh) still works; apiFetch's own 401 handler
-    // calls showSignIn() for us if it doesn't.
+    // No stored access token at all means we've never been signed in on
+    // this device/browser -- skip straight to the sign-in form instead of
+    // a doomed apiFetch call. If a token IS present, confirm it (or its
+    // refresh) still works; apiFetch's own 401 handler calls showSignIn()
+    // for us if it doesn't.
     if (!getAccessToken()) {
       showSignIn();
       return;
