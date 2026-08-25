@@ -238,7 +238,17 @@ async function updateHuckleberryAmount(creds, loggedAt, ounces) {
 }
 
 async function listHuckleberryBottles(creds, limit) {
-  const params = new URLSearchParams({ ...creds, limit: String(limit) });
+  // Build params manually rather than `new URLSearchParams({ ...creds, ... })`
+  // -- URLSearchParams stringifies a null value (child_uid, when not set --
+  // the common case) into the literal string "null", and the sidecar's
+  // `body.get("child_uid") or None` then treats that non-empty string as
+  // truthy, using "null" as a real (bogus) child id instead of falling
+  // through to auto-detection. Silently returns zero bottles for every
+  // account without a manually-set child_uid.
+  const params = new URLSearchParams({ limit: String(limit) });
+  for (const [key, value] of Object.entries(creds)) {
+    if (value !== null && value !== undefined) params.set(key, value);
+  }
   const res = await fetch(`${HUCKLEBERRY_URL}/list-bottles?${params}`);
   if (!res.ok) throw new Error(`huckleberry service ${res.status}`);
   return (await res.json()).bottles || [];
