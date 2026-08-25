@@ -486,6 +486,15 @@
   }
   #hb-creds-save { background: var(--accent); color: white; }
   #hb-creds-remove { background: #2b2f3d; color: var(--text); }
+  #hb-sync-now { background: #2b2f3d; color: var(--text); }
+  #hb-sync-status {
+    font-size: 0.8rem;
+    margin: 6px 0 12px;
+    text-align: center;
+    color: var(--muted);
+    min-height: 1.1em;
+  }
+  #hb-sync-status.error { color: var(--danger); }
   #settings-modal .divider {
     border: none;
     border-top: 1px solid #2b2f3d;
@@ -608,6 +617,10 @@
         <button id="hb-creds-remove">Remove</button>
         <button id="hb-creds-save">Save</button>
       </div>
+      <div class="row-actions">
+        <button id="hb-sync-now">Sync Huckleberry entries</button>
+      </div>
+      <div id="hb-sync-status"></div>
 
       <hr class="divider">
 
@@ -685,6 +698,8 @@
   const $hbChildUid = document.getElementById('hb-child-uid');
   const $hbCredsSave = document.getElementById('hb-creds-save');
   const $hbCredsRemove = document.getElementById('hb-creds-remove');
+  const $hbSyncNow = document.getElementById('hb-sync-now');
+  const $hbSyncStatus = document.getElementById('hb-sync-status');
   const $widgetUrlBox = document.getElementById('widget-url-box');
   const $widgetTokenRegenerate = document.getElementById('widget-token-regenerate');
 
@@ -1410,6 +1425,39 @@
       $hbCredsError.textContent = 'Could not remove — check the server.';
     } finally {
       $hbCredsRemove.disabled = false;
+    }
+  });
+
+  $hbSyncNow.addEventListener('click', async () => {
+    $hbSyncStatus.textContent = '';
+    $hbSyncStatus.classList.remove('error');
+    $hbSyncNow.disabled = true;
+    $hbSyncNow.textContent = 'Syncing…';
+    try {
+      const res = await apiFetch('/api/huckleberry/sync', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.error === 'no_huckleberry_credentials') {
+          $hbSyncStatus.textContent = 'Set up Huckleberry credentials above first.';
+        } else {
+          $hbSyncStatus.textContent = 'Could not reach Huckleberry — try again in a bit.';
+        }
+        $hbSyncStatus.classList.add('error');
+      } else if (data.pulled > 0 || data.matched > 0) {
+        const parts = [];
+        if (data.pulled > 0) parts.push(`${data.pulled} new`);
+        if (data.matched > 0) parts.push(`${data.matched} marked logged`);
+        $hbSyncStatus.textContent = `Synced — ${parts.join(', ')}.`;
+        refreshHistory();
+      } else {
+        $hbSyncStatus.textContent = 'Synced — already up to date.';
+      }
+    } catch (e) {
+      $hbSyncStatus.textContent = 'Network error — try again.';
+      $hbSyncStatus.classList.add('error');
+    } finally {
+      $hbSyncNow.disabled = false;
+      $hbSyncNow.textContent = 'Sync Huckleberry entries';
     }
   });
 

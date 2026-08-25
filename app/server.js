@@ -258,16 +258,16 @@ async function listHuckleberryBottles(creds, limit) {
  */
 async function syncFromHuckleberry(userId) {
   const creds = await getHuckleberryCreds(userId);
-  if (!creds) return;
+  if (!creds) return { ok: false, reason: 'no_credentials' };
 
   let remoteBottles;
   try {
     remoteBottles = await listHuckleberryBottles(creds, HISTORY_LIMIT);
   } catch (err) {
     console.error(`[huckleberry-sync] user ${userId}: list-bottles failed, serving local view only: ${err.message}`);
-    return;
+    return { ok: false, reason: 'huckleberry_unreachable' };
   }
-  if (remoteBottles.length === 0) return;
+  if (remoteBottles.length === 0) return { ok: true, checked: 0, pulled: 0, matched: 0 };
 
   const oldestRemoteMs = Math.min(...remoteBottles.map((b) => new Date(b.start_iso).getTime()));
   const local = await pool.query(
@@ -276,6 +276,8 @@ async function syncFromHuckleberry(userId) {
   );
   const localBottles = local.rows;
 
+  let pulled = 0;
+  let matched = 0;
   for (const remote of remoteBottles) {
     const remoteMs = new Date(remote.start_iso).getTime();
     const match = localBottles.find(
@@ -285,6 +287,7 @@ async function syncFromHuckleberry(userId) {
       if (!match.huckleberry_logged) {
         await pool.query('UPDATE bottles SET huckleberry_logged = true WHERE id = $1', [match.id]);
         match.huckleberry_logged = true;
+        matched++;
       }
       continue;
     }
@@ -295,12 +298,14 @@ async function syncFromHuckleberry(userId) {
         [userId, new Date(remoteMs), remote.amount_oz, remote.start_iso]
       );
       localBottles.push(inserted.rows[0]);
+      pulled++;
       console.log(`[huckleberry-sync] user ${userId}: pulled in bottle at ${remote.start_iso}`);
     } catch (err) {
       if (err.code === '23505') continue; // unique_violation -- another concurrent call already inserted it
       throw err;
     }
   }
+  return { ok: true, checked: remoteBottles.length, pulled, matched };
 }
 
 /**
@@ -676,6 +681,23 @@ async function main() {
     } catch (err) {
       console.error('[bottle/update-huckleberry] error', err);
       res.status(500).json({ error: 'update_failed' });
+    }
+  });
+
+  // Manual "force a sync now" from Settings -- same reconciliation
+  // GET /api/history already does automatically, just callable on demand
+  // rather than waiting for the next history load.
+  app.post('/api/huckleberry/sync', async (req, res) => {
+    try {
+      const result = await syncFromHuckleberry(req.user.id);
+      if (!result.ok) {
+        const status = result.reason === 'no_credentials' ? 400 : 502;
+        return res.status(status).json({ error: result.reason === 'no_credentials' ? 'no_huckleberry_credentials' : 'huckleberry_unreachable' });
+      }
+      res.json(result);
+    } catch (err) {
+      console.error('[huckleberry/sync] error', err);
+      res.status(500).json({ error: 'sync_failed' });
     }
   });
 
