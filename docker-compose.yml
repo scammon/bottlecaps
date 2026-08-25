@@ -41,6 +41,15 @@ services:
     restart: unless-stopped
     # No huckleberry.env anymore -- credentials are per-user now, passed
     # per-request from the app (see huckleberry/app.py).
+    # `expose` (not `ports`) -- internal-only, no host publish. Per Dailey
+    # OS's own docs (dailey.yaml reference, "processes" section), a
+    # process/service is only reachable internally, and only gets its
+    # <NAME>_URL auto-injected into others, if it declares a port -- this
+    # was missing entirely, which is the likely real cause of the
+    # ECONNREFUSED we hit tonight (a Service object existed and resolved,
+    # but nothing was correctly wired behind it).
+    expose:
+      - "8080"
 
 volumes:
   postgres_data:
