@@ -41,15 +41,17 @@ services:
     restart: unless-stopped
     # No huckleberry.env anymore -- credentials are per-user now, passed
     # per-request from the app (see huckleberry/app.py).
-    # `expose` (not `ports`) -- internal-only, no host publish. Per Dailey
-    # OS's own docs (dailey.yaml reference, "processes" section), a
-    # process/service is only reachable internally, and only gets its
-    # <NAME>_URL auto-injected into others, if it declares a port -- this
-    # was missing entirely, which is the likely real cause of the
-    # ECONNREFUSED we hit tonight (a Service object existed and resolved,
-    # but nothing was correctly wired behind it).
-    expose:
-      - "8080"
+    # Declares the port so Dailey OS's compose-to-processes synthesizer can
+    # wire internal routing (see dailey.yaml docs -- a service is only
+    # reachable internally if it declares a port). Tried `expose` first
+    # (internal-only, no host publish -- the more semantically correct
+    # choice for compose) but that alone didn't fix the ECONNREFUSED we
+    # were seeing; using `ports` instead in case that's specifically what
+    # their synthesizer parses. On mini's own docker-compose stack this
+    # still doesn't publish 8080 anywhere reachable from outside the
+    # container network -- nothing else on that host binds to it.
+    ports:
+      - "8080:8080"
 
 volumes:
   postgres_data:
