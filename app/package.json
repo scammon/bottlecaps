@@ -8,7 +8,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "cookie-parser": "^1.4.6",
     "express": "^4.19.2",
     "jose": "^5.9.6",
     "pg": "^8.13.0",
