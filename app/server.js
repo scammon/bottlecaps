@@ -154,6 +154,7 @@ function rowToHistoryEntry(row) {
     ounces: row.ounces === null ? null : Number(row.ounces),
     pendingOunces: row.pending_ounces === null ? null : Number(row.pending_ounces),
     huckleberryLogged: row.huckleberry_logged,
+    source: row.source,
   };
 }
 
@@ -304,7 +305,7 @@ async function syncFromHuckleberry(userId) {
     try {
       const inserted = await pool.query(
         `INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged, source, huckleberry_start_iso)
-         VALUES ($1, $2, $3, true, true, 'huckleberry', $4) RETURNING id, logged_at, huckleberry_logged`,
+         VALUES ($1, $2, $3, true, true, 'H', $4) RETURNING id, logged_at, huckleberry_logged`,
         [userId, new Date(remoteMs), remote.amount_oz, remote.start_iso]
       );
       localBottles.push(inserted.rows[0]);
@@ -429,6 +430,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS bottles_hb_start_iso_uidx
   ON bottles (user_id, huckleberry_start_iso) WHERE huckleberry_start_iso IS NOT NULL;
 CREATE INDEX IF NOT EXISTS bottles_unnotified_idx ON bottles (user_id, logged_at DESC)
   WHERE notified = false;
+
+-- Normalize bottles.source to the single-letter code scheme
+-- (T=timer button, H=pulled from Huckleberry, A=automatic/brezza-monitor).
+-- Safe on every boot: backfills the two prior states (the old
+-- 'huckleberry' string, and every earlier row that predates this column
+-- entirely and is thus a manual timer-button log) and is a no-op once
+-- everything's already coded.
+UPDATE bottles SET source = 'H' WHERE source = 'huckleberry';
+UPDATE bottles SET source = 'T' WHERE source IS NULL;
+ALTER TABLE bottles ALTER COLUMN source SET DEFAULT 'T';
+ALTER TABLE bottles ALTER COLUMN source SET NOT NULL;
+DO $$ BEGIN
+  ALTER TABLE bottles ADD CONSTRAINT bottles_source_check CHECK (source IN ('T', 'H', 'A'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -569,11 +585,16 @@ async function main() {
     } else {
       ounces = settings.ounces;
     }
+    // 'A' is the only source an external caller may assert (brezza-monitor,
+    // authenticating as the user like any other client) -- everything else
+    // defaults to 'T', the timer button on the page itself. 'H' is only
+    // ever set internally by syncFromHuckleberry, never via this route.
+    const source = req.body?.source === 'A' ? 'A' : 'T';
     try {
       const loggedAt = new Date();
       const inserted = await pool.query(
-        'INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged) VALUES ($1, $2, $3, false, false) RETURNING id',
-        [req.user.id, loggedAt, ounces]
+        'INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged, source) VALUES ($1, $2, $3, false, false, $4) RETURNING id',
+        [req.user.id, loggedAt, ounces, source]
       );
       await pool.query(
         `INSERT INTO settings (user_id, default_ounces) VALUES ($1, $2)

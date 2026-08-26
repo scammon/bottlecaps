@@ -30,9 +30,10 @@ CREATE TABLE IF NOT EXISTS bottles (
   pending_ounces         NUMERIC(5,2),
   notified               BOOLEAN NOT NULL DEFAULT false,
   huckleberry_logged     BOOLEAN NOT NULL DEFAULT false,
-  -- 'huckleberry' for entries pulled in by the bidirectional sync (logged
-  -- straight in the Huckleberry app); NULL for bottles created in bottlecaps.
-  source                 TEXT,
+  -- Single-letter code for how this bottle got logged: 'T' timer button
+  -- (the page itself, also the default), 'H' pulled in by the
+  -- bidirectional Huckleberry sync, 'A' automatic via brezza-monitor.
+  source                 TEXT NOT NULL DEFAULT 'T' CHECK (source IN ('T', 'H', 'A')),
   -- Dedup key for the sync's inserts -- the exact ISO start-time string
   -- Huckleberry reported. Mirrors Mongo's unique partial index on this
   -- field; same purpose (races between concurrent /api/history calls can't

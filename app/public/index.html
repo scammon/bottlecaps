@@ -170,7 +170,7 @@
        below its content's min-content width (e.g. the Log/Update button
        text, or a long timestamp), which was pushing the whole grid --
        and with it the page -- wider than the viewport on narrow phones. */
-    grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.5fr) minmax(0, 0.9fr);
     gap: 8px;
     align-items: center;
   }
@@ -679,7 +679,7 @@
     <h2>Recent bottles</h2>
     <div id="history-list">
       <div class="hist-header">
-        <div>Started</div><div>Oz</div><div>Gap</div><div>Huckleberry</div>
+        <div>Started</div><div>Oz</div><div>Gap</div><div>Src</div><div>Huckleberry</div>
       </div>
       <div id="history-body"></div>
     </div>
@@ -687,6 +687,7 @@
 
 <script>
 (function () {
+  const SOURCE_LABELS = { T: 'Timer button', H: 'Pulled from Huckleberry', A: 'Automatic (Brezza power sensor)' };
   const $timer = document.getElementById('timer');
   const $button = document.getElementById('button');
   const $sub = document.getElementById('sub');
@@ -1214,6 +1215,11 @@
     gapCell.className = 'hist-cell hist-gap';
     gapCell.textContent = row.gapMs === null ? '—' : fmtCompact(row.gapMs);
 
+    const sourceCell = document.createElement('div');
+    sourceCell.className = 'hist-cell hist-source';
+    sourceCell.textContent = row.source || 'T';
+    sourceCell.title = SOURCE_LABELS[row.source] || SOURCE_LABELS.T;
+
     const hbCell = document.createElement('div');
     hbCell.className = 'hist-cell hist-hb';
     if (row.huckleberryLogged && hasPending) {
@@ -1235,7 +1241,7 @@
       hbCell.appendChild(btn);
     }
 
-    content.append(startedCell, ozCell, gapCell, hbCell);
+    content.append(startedCell, ozCell, gapCell, sourceCell, hbCell);
     wrap.appendChild(content);
     wireSwipe(content, !row.huckleberryLogged);
     return wrap;
