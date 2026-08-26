@@ -28,6 +28,12 @@
   html, body {
     height: 100%;
     margin: 0;
+    /* Belt-and-suspenders: the grid-track fix above addresses the actual
+       cause (history rows forcing the page wider than the viewport on
+       narrow phones), this just guarantees no future element can do the
+       same -- vertical scroll only, page content always fits width. */
+    overflow-x: hidden;
+    max-width: 100vw;
   }
   body {
     background: radial-gradient(circle at top, #1b1e27, var(--bg) 60%);
@@ -160,10 +166,15 @@
   #history-list { font-size: 0.9rem; }
   .hist-header, .hist-row-content {
     display: grid;
-    grid-template-columns: 1.3fr 0.7fr 0.9fr 0.9fr;
+    /* minmax(0, ...) not bare Nfr -- a plain fr track still won't shrink
+       below its content's min-content width (e.g. the Log/Update button
+       text, or a long timestamp), which was pushing the whole grid --
+       and with it the page -- wider than the viewport on narrow phones. */
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
     gap: 8px;
     align-items: center;
   }
+  .hist-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-header {
     font-size: 0.68rem;
     letter-spacing: 0.06em;
@@ -362,6 +373,7 @@
     z-index: 20;
   }
   #signin-screen.hidden { display: none; }
+  #signin-name.hidden { display: none; }
   #signin-screen p {
     color: var(--muted);
     font-size: 0.85rem;
@@ -451,6 +463,20 @@
     font-size: 0.75rem;
     color: var(--muted);
     margin-bottom: 4px;
+  }
+  #settings-modal .field-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #settings-modal .field-checkbox input {
+    width: auto;
+    flex: none;
+  }
+  #settings-modal .field-checkbox label {
+    margin-bottom: 0;
+    font-size: 0.85rem;
+    color: var(--text);
   }
   #settings-modal input, #settings-modal select {
     width: 100%;
@@ -613,6 +639,10 @@
         <label for="hb-child-uid">Child ID (only needed for multi-child accounts)</label>
         <input id="hb-child-uid" type="text" placeholder="leave blank to auto-detect">
       </div>
+      <div class="field field-checkbox">
+        <input id="hb-auto-log" type="checkbox" checked>
+        <label for="hb-auto-log">Automatically log new bottles to Huckleberry</label>
+      </div>
       <div class="row-actions">
         <button id="hb-creds-remove">Remove</button>
         <button id="hb-creds-save">Save</button>
@@ -696,6 +726,7 @@
   const $hbPassword = document.getElementById('hb-password');
   const $hbBottleType = document.getElementById('hb-bottle-type');
   const $hbChildUid = document.getElementById('hb-child-uid');
+  const $hbAutoLog = document.getElementById('hb-auto-log');
   const $hbCredsSave = document.getElementById('hb-creds-save');
   const $hbCredsRemove = document.getElementById('hb-creds-remove');
   const $hbSyncNow = document.getElementById('hb-sync-now');
@@ -1374,7 +1405,26 @@
       const me = await apiFetch('/api/me').then((r) => r.json());
       renderWidgetUrl(me.widgetToken);
     } catch (e) { /* leave the box as-is */ }
+    try {
+      const settings = await apiFetch('/api/settings').then((r) => r.json());
+      $hbAutoLog.checked = settings.autoLogHuckleberry;
+    } catch (e) { /* leave the checkbox at its current/default state */ }
   }
+
+  $hbAutoLog.addEventListener('change', async () => {
+    const checked = $hbAutoLog.checked;
+    try {
+      const res = await apiFetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoLogHuckleberry: checked }),
+      });
+      if (!res.ok) throw new Error('save failed');
+    } catch (e) {
+      $hbAutoLog.checked = !checked; // revert on failure
+      $hbCredsError.textContent = 'Could not save that setting — try again.';
+    }
+  });
 
   $openSettings.addEventListener('click', () => {
     $settingsModal.classList.remove('hidden');

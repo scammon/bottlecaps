@@ -60,8 +60,9 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 
 CREATE TABLE IF NOT EXISTS settings (
-  user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  default_ounces  NUMERIC(5,2) NOT NULL DEFAULT 3
+  user_id               UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  default_ounces        NUMERIC(5,2) NOT NULL DEFAULT 3,
+  auto_log_huckleberry  BOOLEAN NOT NULL DEFAULT true
 );
 
 -- One Huckleberry account per bottlecaps user. `encrypted_password` is

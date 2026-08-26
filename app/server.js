@@ -369,8 +369,12 @@ async function broadcastPush(userId, payload) {
 }
 
 async function getSettings(userId) {
-  const res = await pool.query('SELECT default_ounces FROM settings WHERE user_id = $1', [userId]);
-  return { ounces: res.rows.length > 0 ? Number(res.rows[0].default_ounces) : 3 };
+  const res = await pool.query('SELECT default_ounces, auto_log_huckleberry FROM settings WHERE user_id = $1', [userId]);
+  if (res.rows.length === 0) return { ounces: 3, autoLogHuckleberry: true };
+  return {
+    ounces: Number(res.rows[0].default_ounces),
+    autoLogHuckleberry: res.rows[0].auto_log_huckleberry,
+  };
 }
 
 async function connectWithRetry(attempts = 20, delayMs = 1500) {
@@ -437,9 +441,15 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 
 CREATE TABLE IF NOT EXISTS settings (
-  user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  default_ounces  NUMERIC(5,2) NOT NULL DEFAULT 3
+  user_id               UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  default_ounces        NUMERIC(5,2) NOT NULL DEFAULT 3,
+  auto_log_huckleberry  BOOLEAN NOT NULL DEFAULT true
 );
+-- Adds auto_log_huckleberry to a settings table that already existed
+-- before this column did (CREATE TABLE IF NOT EXISTS above is a no-op
+-- once the table's there). Safe to run on every boot: IF NOT EXISTS
+-- makes it a no-op after the first time.
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_log_huckleberry BOOLEAN NOT NULL DEFAULT true;
 
 CREATE TABLE IF NOT EXISTS huckleberry_credentials (
   user_id             UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -551,17 +561,18 @@ async function main() {
   });
 
   app.post('/api/bottle', async (req, res) => {
+    const settings = await getSettings(req.user.id);
     let ounces;
     if (req.body?.ounces !== undefined) {
       ounces = parseOunces(req.body.ounces);
       if (ounces === null) return res.status(400).json({ error: 'invalid_ounces' });
     } else {
-      ounces = (await getSettings(req.user.id)).ounces;
+      ounces = settings.ounces;
     }
     try {
       const loggedAt = new Date();
-      await pool.query(
-        'INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged) VALUES ($1, $2, $3, false, false)',
+      const inserted = await pool.query(
+        'INSERT INTO bottles (user_id, logged_at, ounces, notified, huckleberry_logged) VALUES ($1, $2, $3, false, false) RETURNING id',
         [req.user.id, loggedAt, ounces]
       );
       await pool.query(
@@ -569,6 +580,23 @@ async function main() {
          ON CONFLICT (user_id) DO UPDATE SET default_ounces = $2`,
         [req.user.id, ounces]
       );
+
+      // Best-effort -- a failure here shouldn't fail the bottle-logging
+      // request itself (the user already sees their timer start either
+      // way); it just leaves huckleberry_logged=false so the row's own
+      // Log button is still there as a fallback.
+      if (settings.autoLogHuckleberry) {
+        const creds = await getHuckleberryCreds(req.user.id);
+        if (creds) {
+          try {
+            await logToHuckleberry(creds, loggedAt, ounces);
+            await pool.query('UPDATE bottles SET huckleberry_logged = true WHERE id = $1', [inserted.rows[0].id]);
+          } catch (err) {
+            console.error(`[huckleberry] auto-log failed for bottle ${inserted.rows[0].id}: ${err.message}`);
+          }
+        }
+      }
+
       const total = await pool.query('SELECT count(*) FROM bottles WHERE user_id = $1', [req.user.id]);
       res.json({ ...statusFromLatest({ logged_at: loggedAt }), totalBottles: Number(total.rows[0].count), timerMs: TIMER_MS });
     } catch (err) {
@@ -716,6 +744,23 @@ async function main() {
       res.json(await getSettings(req.user.id));
     } catch (err) {
       console.error('[settings] error', err);
+      res.status(500).json({ error: 'settings_failed' });
+    }
+  });
+
+  app.put('/api/settings', async (req, res) => {
+    if (typeof req.body?.autoLogHuckleberry !== 'boolean') {
+      return res.status(400).json({ error: 'invalid_settings' });
+    }
+    try {
+      await pool.query(
+        `INSERT INTO settings (user_id, auto_log_huckleberry) VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET auto_log_huckleberry = $2`,
+        [req.user.id, req.body.autoLogHuckleberry]
+      );
+      res.json(await getSettings(req.user.id));
+    } catch (err) {
+      console.error('[settings/put] error', err);
       res.status(500).json({ error: 'settings_failed' });
     }
   });
