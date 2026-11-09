@@ -1,1 +1,1 @@
-huckleberry-api>=0.4.3
+huckleberry-api==0.4.3

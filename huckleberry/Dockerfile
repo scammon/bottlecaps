@@ -2,6 +2,9 @@
 # from the node:22-alpine app image.
 FROM python:3.14-slim
 
+# Apply the latest Debian security patches on every build.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt ./
